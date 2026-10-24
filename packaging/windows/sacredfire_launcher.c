@@ -4,7 +4,9 @@
  *
  * Window: the game folder (picker; the game check decides), the game language, online play
  * (Offline, Join server: the host's address, Host server: this PC runs tools\ufc3_server.py for
- * the session, see "Host server" below), the controller for port 1, the game patches (written to bbport.ini as the in-game menu does), PS4 Pro mode, fullscreen,
+ * the session, see "Host server" below), the controller for port 1, the game patches (written to bbport.ini as the in-game menu does),
+ * the Graphics settings window (ufc3-mod: resolution, display, V-Sync, FPS limit, FPS counter, PS4 Pro mode, fullscreen,
+ * anisotropic filtering, FSR 1.0 and sharpening; the main window shows their summary),
  * the developer switches (frame statistics, Vulkan validation, clear the shader cache, menu
  * trace), the log folder (empty: <data>\logs; BB_LOG_DIR wins over the window), Play/Stop, the
  * log of the run, and buttons for the logs and data folders. Settings are kept in
@@ -69,14 +71,17 @@ typedef struct {
     int resolution, fps_mode, present_mode, show_fps, upscaler, sharpness;
     /* The window (presented image) size: the game's 1080p frame scaled to 1440p / 4K. */
     int display;
+    int aniso;       /* ufc3-mod: index into aniso_values[] (BB_ANISO, read once at the game's start) */
     int skip_movies; /* the EA intro and the first-start video replaced by a short black clip */
     int language;    /* index into languages[] */
     /* The folder the run logs (and the frame/readback CSVs) go to; empty: <data>\logs.
      * BB_LOG_DIR wins over it. */
     wchar_t log_dir[PATHW];
 } Settings;
-static Settings settings = {.resolution = 1, .fps_mode = 5, .present_mode = 2, .upscaler = 0, .sharpness = 2, .skip_movies = 1};
-/* Choices of the Video panel (index = the saved value). */
+/* ufc3-mod: the graphics defaults, shared with the Graphics settings window's Defaults button. */
+#define GRAPHICS_DEFAULTS .resolution = 1, .fps_mode = 5, .present_mode = 2, .upscaler = 0, .sharpness = 2, .aniso = 4
+static Settings settings = {GRAPHICS_DEFAULTS, .skip_movies = 1};
+/* Choices of the Graphics settings window (index = the saved value). */
 static const wchar_t *const resolution_names[] = {L"1280x720", L"1920x1080", L"2560x1440 (2K, experimental)", L"3840x2160 (4K, experimental)"};
 /* 2K and 4K (UFC-45/46, validated on Linux): PS4 Pro with a 3840x2160 VideoOut in both, and the
  * experiment's patch (patches\experiments\<dir>, its own patches json) turning the game's
@@ -106,6 +111,14 @@ static const wchar_t *const upscaler_names[] = {L"Off (bilinear)", L"AMD FSR 1.0
 static const wchar_t *const sharpness_names[] = {L"Off", L"Low", L"Medium", L"High"};
 static const wchar_t *const sharpness_attenuation[] = {L"2000", L"1000", L"500", L"200"};
 #define COUNT(a) (int)(sizeof(a) / sizeof((a)[0]))
+/* ufc3-mod: anisotropic filtering of scene textures (Rasterizer::ForceAnisotropy, BB_ANISO; 16 was
+ * the only value before). 0 leaves the game's own filters. The value itself is saved (aniso=). */
+static const wchar_t *const aniso_names[] = {L"Game's own", L"2x", L"4x", L"8x", L"16x"};
+static const wchar_t *const aniso_values[] = {L"0", L"2", L"4", L"8", L"16"};
+static int aniso_index_of(const wchar_t *value) {
+    for (int i = 0; i < COUNT(aniso_values); ++i) if (!wcscmp(aniso_values[i], value)) return i;
+    return -1;
+}
 /* The PS4 system language (BB_LANGUAGE, the system parameter the game reads): the languages
  * whose text the game ships (samplegame\data\kettle\loc: eng_us, fre_fr, ger_de, ita_it,
  * spa_es, spa_mx, por_br, pol_pl, rus_ru, jpn_jp, chi_hk), and Portuguese (Portugal), which it
@@ -127,6 +140,7 @@ static const wchar_t *const managed_env[] = {
     L"BB_Z16S8_AS_D16", L"BB_PREUPLOAD", L"BB_WRITE_STEP", L"BB_COPY_GPU_BUFFERS", L"BB_FPS_LIMIT", L"BB_PRESENT_MODE",
     L"BB_INTERNAL_WIDTH", L"BB_INTERNAL_HEIGHT", L"BB_WINDOW_SIZE", L"BB_USER_NAME", L"BB_SKIP_MOVIES", L"BB_SKIP_MOVIE_FILE", L"BB_FSR1", L"BB_RCAS", L"BB_RCAS_ATTENUATION",
     L"BB_LANGUAGE", L"BB_ONLINE_SERVER", L"BB_FRAME_LOG", L"BB_READBACK_LOG", L"BB_PATCHES_DIR", L"BB_PATCHES_CONFIG",
+    L"BB_ANISO",
 };
 static wchar_t managed_value[sizeof(managed_env) / sizeof(managed_env[0])][1024];
 static int managed_given[sizeof(managed_env) / sizeof(managed_env[0])];
@@ -234,6 +248,7 @@ static void settings_load(void) {
         else if (!wcscmp(line, L"log_dir")) wcsncpy(settings.log_dir, value, PATHW - 1);
         else if (!wcscmp(line, L"display")) settings.display = clampi(_wtoi(value), COUNT(display_names));
         else if (!wcscmp(line, L"language")) { const int i = language_index_of(value); if (i >= 0) settings.language = i; }
+        else if (!wcscmp(line, L"aniso")) { const int i = aniso_index_of(value); if (i >= 0) settings.aniso = i; }
     }
     fclose(f);
     /* A sacredfire.ini of the launcher with one "Online server" field: an address there was Join. */
@@ -250,6 +265,7 @@ static void settings_save(void) {
              settings.game, settings.gamepad, settings.neo, settings.fullscreen, settings.clear_cache, settings.validation,
              settings.frame_stats, settings.menu_trace, settings.resolution, fps_limits[settings.fps_mode], settings.present_mode,
              settings.upscaler, settings.sharpness, settings.display, settings.skip_movies, language_ids[settings.language], settings.log_dir);
+    fwprintf(f, L"aniso=%ls\n", aniso_values[settings.aniso]);
     fclose(f);
 }
 /* bbport.ini: "key=value" lines (UTF-8), shared with the in-game menu. */
@@ -972,6 +988,7 @@ static DWORD play_impl(const wchar_t *const *extra, int extra_count) {
     game_env(L"BB_FSR1", settings.upscaler == 1 ? L"1" : L"0");
     game_env(L"BB_RCAS", settings.sharpness ? L"1" : L"0");
     game_env(L"BB_RCAS_ATTENUATION", sharpness_attenuation[settings.sharpness]);
+    game_env(L"BB_ANISO", aniso_values[settings.aniso]);
     SetEnvironmentVariableW(L"BB_UFFD", L"0");            /* Linux only */
     SetEnvironmentVariableW(L"BB_GUEST_IN_PLACE", L"0");  /* dma-buf memory model: Linux only */
     /* env_or keeps 8 values at a time: two lines. */
@@ -986,8 +1003,9 @@ static DWORD play_impl(const wchar_t *const *extra, int extra_count) {
     if (experiment)
         logw(L"4K/2K experimental: in game choose VIDEO -> Favor Resolution (the scene grows only with it). %ls scene, PS4 Pro %ls, "
              L"patches %ls\n", resolution_names[settings.resolution], env_or(L"BB_NEO", L"?"), patches_dir_used);
-    logw(L"UFC 3: window %ls, FSR 1.0 %ls, RCAS %ls (attenuation %ls), readbacks %ls (2 = precise)\n",
-         env_or(L"BB_WINDOW_SIZE", L"= output"), env_or(L"BB_FSR1", L"0"), env_or(L"BB_RCAS", L"?"), env_or(L"BB_RCAS_ATTENUATION", L"?"), env_or(L"BB_READBACKS", L"?"));
+    logw(L"UFC 3: window %ls, FSR 1.0 %ls, RCAS %ls (attenuation %ls), anisotropy %ls (0 = the game's), readbacks %ls (2 = precise)\n",
+         env_or(L"BB_WINDOW_SIZE", L"= output"), env_or(L"BB_FSR1", L"0"), env_or(L"BB_RCAS", L"?"), env_or(L"BB_RCAS_ATTENUATION", L"?"),
+         env_or(L"BB_ANISO", L"16"), env_or(L"BB_READBACKS", L"?"));
     if (settings.clear_cache || !wcscmp(env_or(L"BB_CLEAR_SHADER_CACHE", L"0"), L"1")) {
         wchar_t cache[PATHW]; join(cache, PATHW, env_or(L"BB_USER_DIR", user_dir), L"cache\\CUSA06534");
         if (exists(cache)) {
@@ -1208,7 +1226,7 @@ static void add_to_steam(void) {
 }
 
 /* ---- the window ---- */
-enum { ID_GAME = 100, ID_BROWSE, ID_PLAYER, ID_LANGUAGE, ID_ONLINE, ID_MODE, ID_HOST, ID_HOSTSCAN, ID_COPYHOST, ID_GAMEPAD, ID_RESCAN, ID_CONTROLS, ID_RESOLUTION, ID_DISPLAY, ID_FPS, ID_PRESENT, ID_UPSCALER, ID_SHARPNESS, ID_SHOWFPS, ID_FULLSCREEN, ID_NEO, ID_SKIPMOVIES, ID_CLEAR, ID_VALIDATION, ID_STATS, ID_TRACE, ID_LOGDIR, ID_LOGDIR_BROWSE,
+enum { ID_GAME = 100, ID_BROWSE, ID_PLAYER, ID_LANGUAGE, ID_ONLINE, ID_MODE, ID_HOST, ID_HOSTSCAN, ID_COPYHOST, ID_GAMEPAD, ID_RESCAN, ID_CONTROLS, ID_GRAPHICS, ID_GRAPHICS_SUMMARY, ID_SKIPMOVIES, ID_CLEAR, ID_VALIDATION, ID_STATS, ID_TRACE, ID_LOGDIR, ID_LOGDIR_BROWSE,
        ID_PLAY, ID_STOP, ID_STEAM, ID_LOGS, ID_DATA, ID_LOG, ID_LAST };
 static HWND controls[ID_LAST - 100];
 static int running;
@@ -1244,7 +1262,7 @@ enum { CLIENT_W = 900, CLIENT_H = 884, BANNER_H = 120 };
 /* The sections, at 96 DPI (sx scales them). */
 static const struct { int x, y, w, h; const wchar_t *title; } panels[] = {
     {16, 134, 426, 214, L"GAME"}, {16, 360, 426, 220, L"ONLINE"},
-    {458, 134, 426, 330, L"VIDEO"}, {458, 476, 426, 104, L"ADVANCED"},
+    {458, 134, 426, 330, L"GRAPHICS"}, {458, 476, 426, 104, L"ADVANCED"},
     {16, 592, 868, 88, L"LOGS"}};
 static HBRUSH brush_background, brush_panel, brush_input, brush_log;
 static HFONT font_section, font_title, font_small, font_log, font_action;
@@ -1680,15 +1698,6 @@ static void online_controls(void) {
     EnableWindow(control(ID_HOSTSCAN), !running && mode == ONLINE_HOST);
     EnableWindow(control(ID_COPYHOST), mode == ONLINE_HOST);
 }
-/* 2K / 4K run in PS4 Pro mode: the box shows it on and locked; the user's own choice (neo_user)
- * comes back with 720p / 1080p and is what sacredfire.ini keeps. */
-static int neo_user;
-static void video_controls(void) {
-    const int r = clampi((int)SendMessageW(control(ID_RESOLUTION), CB_GETCURSEL, 0, 0), COUNT(resolution_names));
-    const int forced = resolution_experiment[r] != NULL;
-    set_checked(ID_NEO, forced || neo_user);
-    EnableWindow(control(ID_NEO), !running && !forced);
-}
 static void fill_host_addresses(void) {
     wchar_t current[256]; GetWindowTextW(control(ID_HOST), current, COUNT(current));
     if (!current[0]) wcsncpy(current, settings.host_address, COUNT(current)-1);
@@ -1730,20 +1739,141 @@ static void read_controls(void) {
     address_token(host, settings.host_address, COUNT(settings.host_address));
     int sel = (int)SendMessageW(control(ID_GAMEPAD), CB_GETCURSEL, 0, 0);
     if (sel > 0 && sel <= gamepad_count) wcsncpy(settings.gamepad, gamepads[sel - 1].guid, 127); else settings.gamepad[0] = 0;
-    settings.fullscreen = checked(ID_FULLSCREEN); settings.neo = neo_user; settings.skip_movies = checked(ID_SKIPMOVIES); settings.clear_cache = checked(ID_CLEAR);
+    settings.skip_movies = checked(ID_SKIPMOVIES); settings.clear_cache = checked(ID_CLEAR);
     settings.validation = checked(ID_VALIDATION); settings.frame_stats = checked(ID_STATS); settings.menu_trace = checked(ID_TRACE);
-    settings.resolution = clampi((int)SendMessageW(control(ID_RESOLUTION), CB_GETCURSEL, 0, 0), COUNT(resolution_names));
-    settings.fps_mode = clampi((int)SendMessageW(control(ID_FPS), CB_GETCURSEL, 0, 0), COUNT(fps_names));
-    settings.present_mode = clampi((int)SendMessageW(control(ID_PRESENT), CB_GETCURSEL, 0, 0), COUNT(present_names));
-    settings.upscaler = clampi((int)SendMessageW(control(ID_UPSCALER), CB_GETCURSEL, 0, 0), COUNT(upscaler_names));
-    settings.sharpness = clampi((int)SendMessageW(control(ID_SHARPNESS), CB_GETCURSEL, 0, 0), COUNT(sharpness_names));
-    settings.display = clampi((int)SendMessageW(control(ID_DISPLAY), CB_GETCURSEL, 0, 0), COUNT(display_names));
+    /* ufc3-mod: the graphics settings are in `settings` already (the Graphics settings window saves them). */
     settings.language = clampi((int)SendMessageW(control(ID_LANGUAGE), CB_GETCURSEL, 0, 0), COUNT(language_names));
     GetWindowTextW(control(ID_LOGDIR), settings.log_dir, PATHW); trimw(settings.log_dir);
-    const int show_fps = checked(ID_SHOWFPS);
-    ini_set("show_fps", show_fps ? "1" : "0"); /* written always: the game's own default is off */
-    settings.show_fps = show_fps;
+    ini_set("show_fps", settings.show_fps ? "1" : "0"); /* written always: the game's own default is off */
     settings_save();
+}
+
+/* ---- ufc3-mod: the Graphics settings window ----
+ * The game's video settings in one place, as a PC game's graphics menu (Display, Quality,
+ * Upscaling), instead of the main window's former Video panel; built as the Controls window.
+ * Everything here is read by the game at start; the in-game menu (Insert / L3+R3) has the
+ * settings that change live. Save writes sacredfire.ini (and show_fps to bbport.ini) at once. */
+enum { ID_GFX_RESOLUTION = 2300, ID_GFX_DISPLAY, ID_GFX_PRESENT, ID_GFX_FPS, ID_GFX_FULLSCREEN, ID_GFX_SHOWFPS,
+       ID_GFX_ANISO, ID_GFX_NEO, ID_GFX_UPSCALER, ID_GFX_SHARPNESS, ID_GFX_DEFAULTS, ID_GFX_SAVE, ID_GFX_CANCEL };
+static const Settings graphics_defaults = {GRAPHICS_DEFAULTS, .show_fps = 1}; /* show_fps: as patches_load */
+static HWND gfx_window;
+/* 2K / 4K run in PS4 Pro mode: the box shows it on and locked; the user's own choice (gfx_neo_user)
+ * comes back with 720p / 1080p and is what sacredfire.ini keeps. */
+static int gfx_neo_user;
+static HWND gfx(int id) { return GetDlgItem(gfx_window, id); }
+static int gfx_pick(int id, int count) { return clampi((int)SendMessageW(gfx(id), CB_GETCURSEL, 0, 0), count); }
+static int gfx_checked(int id) { return SendMessageW(gfx(id), BM_GETCHECK, 0, 0) == BST_CHECKED; }
+static void gfx_check(int id, int on) { SendMessageW(gfx(id), BM_SETCHECK, on ? BST_CHECKED : BST_UNCHECKED, 0); }
+static void gfx_neo_state(void) {
+    const int forced = resolution_experiment[gfx_pick(ID_GFX_RESOLUTION, COUNT(resolution_names))] != NULL;
+    gfx_check(ID_GFX_NEO, forced || gfx_neo_user);
+    EnableWindow(gfx(ID_GFX_NEO), !forced);
+}
+static void gfx_show(const Settings *s) {
+    const struct { int id, selected; } picks[] = {
+        {ID_GFX_RESOLUTION, s->resolution}, {ID_GFX_DISPLAY, s->display}, {ID_GFX_PRESENT, s->present_mode}, {ID_GFX_FPS, s->fps_mode},
+        {ID_GFX_ANISO, s->aniso}, {ID_GFX_UPSCALER, s->upscaler}, {ID_GFX_SHARPNESS, s->sharpness}};
+    for (int i = 0; i < COUNT(picks); ++i) SendMessageW(gfx(picks[i].id), CB_SETCURSEL, picks[i].selected, 0);
+    gfx_check(ID_GFX_FULLSCREEN, s->fullscreen); gfx_check(ID_GFX_SHOWFPS, s->show_fps);
+    gfx_neo_user = s->neo;
+    gfx_neo_state();
+}
+/* The main window's summary of the graphics settings. */
+static void graphics_summary(void) {
+    const int pro = settings.neo || resolution_experiment[settings.resolution];
+    wchar_t text[768];
+    _snwprintf(text, COUNT(text),
+               L"Game resolution: %ls, %ls\nDisplay resolution: %ls\nPresent mode: %ls\nFPS limit: %ls, FPS counter %ls\n"
+               L"Anisotropic filtering: %ls, PS4 Pro mode %ls\nUpscaling: %ls, sharpening %ls",
+               resolution_names[settings.resolution], settings.fullscreen ? L"fullscreen" : L"windowed", display_names[settings.display],
+               present_names[settings.present_mode], fps_names[settings.fps_mode], settings.show_fps ? L"on" : L"off",
+               aniso_names[settings.aniso], pro ? L"on" : L"off", upscaler_names[settings.upscaler], sharpness_names[settings.sharpness]);
+    text[COUNT(text) - 1] = 0;
+    SetWindowTextW(control(ID_GRAPHICS_SUMMARY), text);
+}
+static void gfx_save(void) {
+    settings.resolution = gfx_pick(ID_GFX_RESOLUTION, COUNT(resolution_names));
+    settings.display = gfx_pick(ID_GFX_DISPLAY, COUNT(display_names));
+    settings.present_mode = gfx_pick(ID_GFX_PRESENT, COUNT(present_names));
+    settings.fps_mode = gfx_pick(ID_GFX_FPS, COUNT(fps_names));
+    settings.aniso = gfx_pick(ID_GFX_ANISO, COUNT(aniso_names));
+    settings.upscaler = gfx_pick(ID_GFX_UPSCALER, COUNT(upscaler_names));
+    settings.sharpness = gfx_pick(ID_GFX_SHARPNESS, COUNT(sharpness_names));
+    settings.fullscreen = gfx_checked(ID_GFX_FULLSCREEN); settings.show_fps = gfx_checked(ID_GFX_SHOWFPS);
+    settings.neo = gfx_neo_user;
+    read_controls(); /* the main window's fields too, then sacredfire.ini and bbport.ini */
+    graphics_summary();
+}
+static HWND gfx_make(const wchar_t *cls, const wchar_t *text, DWORD style, int x, int y, int w, int h, int id) {
+    HWND h_wnd = CreateWindowExW(0, cls, text, WS_CHILD | WS_VISIBLE | style, sx(x), sx(y), sx(w), sx(h), gfx_window,
+                                 (HMENU)(INT_PTR)id, GetModuleHandleW(NULL), NULL);
+    SendMessageW(h_wnd, WM_SETFONT, (WPARAM)ui_font, TRUE);
+    return h_wnd;
+}
+static LRESULT CALLBACK gfx_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+    switch (message) {
+    case WM_COMMAND: {
+        const int id = LOWORD(wparam);
+        if (id == ID_GFX_RESOLUTION && HIWORD(wparam) == CBN_SELCHANGE) gfx_neo_state();
+        else if (id == ID_GFX_NEO) gfx_neo_user = gfx_checked(ID_GFX_NEO);
+        else if (id == ID_GFX_DEFAULTS) gfx_show(&graphics_defaults);
+        else if (id == ID_GFX_SAVE) { gfx_save(); DestroyWindow(window); }
+        else if (id == ID_GFX_CANCEL || id == IDCANCEL) DestroyWindow(window);
+        return 0;
+    }
+    case WM_CLOSE: DestroyWindow(window); return 0;
+    case WM_DESTROY: gfx_window = NULL; EnableWindow(main_window, TRUE); SetForegroundWindow(main_window); return 0;
+    }
+    return DefWindowProcW(window, message, wparam, lparam);
+}
+static void graphics_open(void) {
+    if (gfx_window) { SetForegroundWindow(gfx_window); return; }
+    static int registered;
+    if (!registered) {
+        WNDCLASSW wc = {.lpfnWndProc = gfx_proc, .hInstance = GetModuleHandleW(NULL), .hCursor = LoadCursorW(NULL, IDC_ARROW),
+                        .hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1), .lpszClassName = L"UFC3NativeGraphics"};
+        RegisterClassW(&wc);
+        registered = 1;
+    }
+    const int client_w = 520, client_h = 472;
+    RECT r = {0, 0, sx(client_w), sx(client_h)};
+    AdjustWindowRect(&r, WS_CAPTION | WS_SYSMENU, FALSE);
+    gfx_window = CreateWindowExW(WS_EX_DLGMODALFRAME, L"UFC3NativeGraphics", L"Graphics settings", WS_CAPTION | WS_SYSMENU | WS_POPUP,
+                                 CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, main_window, NULL,
+                                 GetModuleHandleW(NULL), NULL);
+    if (!gfx_window) return;
+    const struct { int id, count; const wchar_t *const *names; } lists[] = {
+        {ID_GFX_RESOLUTION, COUNT(resolution_names), resolution_names}, {ID_GFX_DISPLAY, COUNT(display_names), display_names},
+        {ID_GFX_PRESENT, COUNT(present_names), present_names}, {ID_GFX_FPS, COUNT(fps_names), fps_names},
+        {ID_GFX_ANISO, COUNT(aniso_names), aniso_names}, {ID_GFX_UPSCALER, COUNT(upscaler_names), upscaler_names},
+        {ID_GFX_SHARPNESS, COUNT(sharpness_names), sharpness_names}};
+    /* A labelled drop-down list per row. */
+    const struct { const wchar_t *text; int id, y; } rows[] = {
+        {L"Game resolution", ID_GFX_RESOLUTION, 30}, {L"Display resolution", ID_GFX_DISPLAY, 58},
+        {L"V-Sync / present mode", ID_GFX_PRESENT, 86}, {L"FPS limit", ID_GFX_FPS, 114},
+        {L"Anisotropic filtering", ID_GFX_ANISO, 214}, {L"Upscaling", ID_GFX_UPSCALER, 306}, {L"Sharpening (RCAS)", ID_GFX_SHARPNESS, 334}};
+    gfx_make(L"BUTTON", L"Display", BS_GROUPBOX, 10, 8, 500, 176, 0);
+    gfx_make(L"BUTTON", L"Quality", BS_GROUPBOX, 10, 192, 500, 84, 0);
+    gfx_make(L"BUTTON", L"Upscaling", BS_GROUPBOX, 10, 284, 500, 84, 0);
+    for (int i = 0; i < COUNT(rows); ++i) {
+        gfx_make(L"STATIC", rows[i].text, SS_CENTERIMAGE | SS_NOPREFIX, 24, rows[i].y, 152, 22, 0);
+        HWND list = gfx_make(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, 180, rows[i].y, 316, 300, rows[i].id);
+        for (int l = 0; l < COUNT(lists); ++l)
+            if (lists[l].id == rows[i].id)
+                for (int k = 0; k < lists[l].count; ++k) SendMessageW(list, CB_ADDSTRING, 0, (LPARAM)lists[l].names[k]);
+    }
+    gfx_make(L"BUTTON", L"Fullscreen", BS_AUTOCHECKBOX | WS_TABSTOP, 24, 148, 200, 22, ID_GFX_FULLSCREEN);
+    gfx_make(L"BUTTON", L"Show the FPS counter", BS_AUTOCHECKBOX | WS_TABSTOP, 260, 148, 236, 22, ID_GFX_SHOWFPS);
+    gfx_make(L"BUTTON", L"PS4 Pro mode (sharper; 1080p instead of 900p)", BS_AUTOCHECKBOX | WS_TABSTOP, 24, 244, 472, 22, ID_GFX_NEO);
+    gfx_make(L"STATIC", L"Applied when the game starts. 2K / 4K (experimental) turn PS4 Pro mode on; in game choose "
+                        L"VIDEO \x2192 Favor Resolution. 720p / 1080p on a larger screen: set Display resolution with "
+                        L"Upscaling = AMD FSR 1.0.", SS_NOPREFIX, 12, 376, 496, 48, 0);
+    gfx_make(L"BUTTON", L"Defaults", BS_PUSHBUTTON | WS_TABSTOP, 10, 432, 110, 30, ID_GFX_DEFAULTS);
+    gfx_make(L"BUTTON", L"Save", BS_DEFPUSHBUTTON | WS_TABSTOP, 282, 432, 110, 30, ID_GFX_SAVE);
+    gfx_make(L"BUTTON", L"Cancel", BS_PUSHBUTTON | WS_TABSTOP, 400, 432, 110, 30, ID_GFX_CANCEL);
+    gfx_show(&settings);
+    EnableWindow(main_window, FALSE);
+    ShowWindow(gfx_window, SW_SHOW);
 }
 static int pick_folder(const wchar_t *title, wchar_t *out_path) {
     int ok = 0;
@@ -1807,7 +1937,6 @@ static void set_running(int on) {
     for (int id = ID_GAME; id <= ID_LOGDIR_BROWSE; ++id) EnableWindow(control(id), !on);
     EnableWindow(control(ID_STEAM), !on);
     online_controls();
-    video_controls();
 }
 /* Small screens (a 768p laptop, 125 % and up on 1080p): when the window does not fit the work
  * area of its monitor, gui() clamps it there and the layout scrolls vertically. scroll_page is
@@ -1868,11 +1997,11 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
         const int id = LOWORD(wparam), code = HIWORD(wparam);
         /* Owner-drawn check boxes toggle themselves (a quick second click arrives as a double click). */
         if (id >= 100 && id < ID_LAST && is_check[id - 100]) {
-            if (code == BN_CLICKED || code == BN_DOUBLECLICKED) { set_checked(id, !checked(id)); if (id == ID_NEO) neo_user = checked(id); }
+            if (code == BN_CLICKED || code == BN_DOUBLECLICKED) set_checked(id, !checked(id));
             return 0;
         }
         if (code == BN_DOUBLECLICKED) return 0;
-        if (id == ID_RESOLUTION && code == CBN_SELCHANGE) video_controls();
+        if (id == ID_GRAPHICS && !running) graphics_open();
         else if (id == ID_GAME && code == EN_KILLFOCUS) {
             wchar_t folder[PATHW]; GetWindowTextW(control(ID_GAME), folder, PATHW); trimw(folder);
             banner_load(folder); RECT banner = {0, 0, sx(CLIENT_W), sx(BANNER_H)}; InvalidateRect(window, &banner, FALSE);
@@ -2078,20 +2207,13 @@ static int gui(HINSTANCE instance, const wchar_t *const *extra, int extra_count)
     button(L"Copy IP", 246, y, 100, 24, ID_COPYHOST); y += 32;
     note(L"Host: share this PC's address with your friend (Copy IP). Outside your LAN both PCs need a VPN: "
          L"choose this PC's VPN IP. The server starts with Play and stops with the game.", 28, y, 402, 58);
-    /* VIDEO (right column; content x 470..872) */
+    /* GRAPHICS (right column; content x 470..872). ufc3-mod: a summary; the settings themselves are
+     * in the Graphics settings window. */
     y = 134 + 34;
-    const struct { const wchar_t *text; int id; } video_rows[] = {
-        {L"Game resolution", ID_RESOLUTION}, {L"Display resolution", ID_DISPLAY}, {L"Present mode", ID_PRESENT},
-        {L"Upscaling", ID_UPSCALER}, {L"Sharpening (RCAS)", ID_SHARPNESS}, {L"FPS limit", ID_FPS}};
-    for (int i = 0; i < COUNT(video_rows); ++i, y += 30) {
-        label(video_rows[i].text, 470, y, 130); combo(604, y, 268, video_rows[i].id, 0);
-        SendMessageW(control(video_rows[i].id), CB_SETDROPPEDWIDTH, (WPARAM)sx(330), 0);
-    }
-    y += 4;
-    checkbox(L"Fullscreen", 470, y, 190, ID_FULLSCREEN); checkbox(L"PS4 Pro mode (sharper)", 672, y, 200, ID_NEO); y += 26;
-    checkbox(L"Show the FPS counter", 470, y, 190, ID_SHOWFPS); checkbox(L"Skip the intro videos", 672, y, 200, ID_SKIPMOVIES); y += 30;
-    note(L"2K / 4K (experimental): PS4 Pro with a 4K output; in game choose VIDEO \x2192 Favor Resolution. "
-         L"720p / 1080p on a large screen: Display resolution with Upscaling = AMD FSR 1.0.", 470, y, 402, 50);
+    make(L"STATIC", L"", SS_NOPREFIX, 470, y, 402, 120, ID_GRAPHICS_SUMMARY); y += 128;
+    button(L"Graphics settings...", 470, y, 200, 30, ID_GRAPHICS); y += 40;
+    checkbox(L"Skip the intro videos", 470, y, 200, ID_SKIPMOVIES); y += 30;
+    note(L"Applied when the game starts. In game, Insert or L3+R3 opens the settings that change live.", 470, y, 402, 36);
     /* ADVANCED */
     y = 476 + 40;
     checkbox(L"Clear the shader cache at start", 470, y, 210, ID_CLEAR); checkbox(L"Frame statistics", 692, y, 180, ID_STATS); y += 28;
@@ -2116,12 +2238,6 @@ static int gui(HINSTANCE instance, const wchar_t *const *extra, int extra_count)
     SendMessageW(log_edit, EM_SETLIMITTEXT, 0, 0);
     {
         const struct { int id, count, selected; const wchar_t *const *names; } combos[] = {
-            {ID_RESOLUTION, COUNT(resolution_names), settings.resolution, resolution_names},
-            {ID_DISPLAY, COUNT(display_names), settings.display, display_names},
-            {ID_FPS, COUNT(fps_names), settings.fps_mode, fps_names},
-            {ID_PRESENT, COUNT(present_names), settings.present_mode, present_names},
-            {ID_UPSCALER, COUNT(upscaler_names), settings.upscaler, upscaler_names},
-            {ID_SHARPNESS, COUNT(sharpness_names), settings.sharpness, sharpness_names},
             {ID_MODE, COUNT(online_mode_names), settings.online_mode, online_mode_names},
             {ID_LANGUAGE, COUNT(language_names), settings.language, language_names},
         };
@@ -2130,8 +2246,8 @@ static int gui(HINSTANCE instance, const wchar_t *const *extra, int extra_count)
             SendMessageW(control(combos[c].id), CB_SETCURSEL, combos[c].selected, 0);
         }
     }
-    neo_user = settings.neo;
-    set_checked(ID_SHOWFPS, settings.show_fps); set_checked(ID_FULLSCREEN, settings.fullscreen); set_checked(ID_NEO, settings.neo); set_checked(ID_SKIPMOVIES, settings.skip_movies); set_checked(ID_CLEAR, settings.clear_cache);
+    graphics_summary();
+    set_checked(ID_SKIPMOVIES, settings.skip_movies); set_checked(ID_CLEAR, settings.clear_cache);
     set_checked(ID_STATS, settings.frame_stats); set_checked(ID_VALIDATION, settings.validation); set_checked(ID_TRACE, settings.menu_trace);
     gamepads_refresh(); fill_gamepads(); fill_host_addresses();
     set_running(0);
@@ -2147,6 +2263,7 @@ static int gui(HINSTANCE instance, const wchar_t *const *extra, int extra_count)
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
         if (ctl_capture_key(&msg)) continue;
         if (ctl_window && IsDialogMessageW(ctl_window, &msg)) continue;
+        if (gfx_window && IsDialogMessageW(gfx_window, &msg)) continue;
         if (!IsDialogMessageW(main_window, &msg)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
         scroll_to_focus();
     }
