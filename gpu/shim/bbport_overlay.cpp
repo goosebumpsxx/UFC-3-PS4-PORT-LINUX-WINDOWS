@@ -203,6 +203,93 @@ void Hint(const char* text) {
     }
 }
 
+// ufc3-mod: a value the launcher hands the game at start (an environment variable), or `unset`.
+const char* StartupValue(const char* name, const char* unset) {
+    const char* value = std::getenv(name);
+    return value && value[0] ? value : unset;
+}
+
+// ufc3-mod: the settings the launcher passes at start (its Graphics settings window on Windows,
+// ufc3.conf / run.sh on Linux) are shown here read-only, as rows of a two-column table: the menu
+// cannot change them until it writes the launcher's sacredfire.ini (handoff phase 4).
+bool BeginStartupTable(const char* id) {
+    ImGui::SeparatorText(BbSettings::MenuText("Set in the launcher (restart required)",
+                                              "Set in the launcher (restart required)"));
+    return ImGui::BeginTable(id, 2, ImGuiTableFlags_SizingStretchProp);
+}
+void StartupRow(const char* label, const char* value) {
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(label);
+    ImGui::TableNextColumn();
+    ImGui::TextDisabled("%s", value);
+}
+void EndStartupTable() {
+    ImGui::EndTable();
+    ImGui::TextDisabled("%s", BbSettings::MenuText(
+        "Change these in the launcher (Graphics settings...), then restart the game.",
+        "Change these in the launcher (Graphics settings...), then restart the game."));
+}
+bool StartupOn(const char* name, bool unset_on) {
+    const char* value = std::getenv(name);
+    return value && value[0] ? value[0] == '1' : unset_on;
+}
+const char* OnOff(const char* name, bool unset_on) {
+    return StartupOn(name, unset_on) ? BbSettings::MenuText("On", "Вкл") : BbSettings::MenuText("Off", "Выкл");
+}
+
+void DisplayTab() {
+    auto& s = BbSettings::Get();
+    Checkbox(BbSettings::MenuText("FPS counter in corner", "Счётчик FPS в углу"), s.show_fps);
+    if (!BeginStartupTable("##display_startup")) {
+        return;
+    }
+    char resolution[64];
+    std::snprintf(resolution, sizeof resolution, "%s x %s", StartupValue("BB_INTERNAL_WIDTH", "1920"),
+                  StartupValue("BB_INTERNAL_HEIGHT", "1080"));
+    StartupRow(BbSettings::MenuText("Game resolution", "Game resolution"), resolution);
+    StartupRow(BbSettings::MenuText("Display resolution", "Display resolution"),
+               StartupValue("BB_WINDOW_SIZE", BbSettings::MenuText("Same as the game", "Same as the game")));
+    StartupRow(BbSettings::MenuText("Fullscreen", "Fullscreen"), OnOff("BB_FULLSCREEN", false));
+    StartupRow(BbSettings::MenuText("V-Sync / present mode", "V-Sync / present mode"),
+               StartupValue("BB_PRESENT_MODE", BbSettings::MenuText("Default", "Default")));
+    const char* limit = StartupValue("BB_FPS_LIMIT", "0");
+    StartupRow(BbSettings::MenuText("FPS limit", "FPS limit"),
+               std::strcmp(limit, "0") == 0 ? BbSettings::MenuText("Unlimited", "Unlimited") : limit);
+    EndStartupTable();
+}
+
+void QualityTab() {
+    if (!BeginStartupTable("##quality_startup")) {
+        return;
+    }
+    // Rasterizer::ForceAnisotropy: 16 without BB_ANISO, 0 or 1 leaves the game's own filters.
+    char aniso[32];
+    const int level = std::atoi(StartupValue("BB_ANISO", "16"));
+    std::snprintf(aniso, sizeof aniso, "%dx", level);
+    StartupRow(BbSettings::MenuText("Anisotropic filtering", "Anisotropic filtering"),
+               level <= 1 ? BbSettings::MenuText("Game's own", "Game's own") : aniso);
+    StartupRow(BbSettings::MenuText("PS4 Pro mode", "PS4 Pro mode"), OnOff("BB_NEO", false));
+    EndStartupTable();
+}
+
+void UpscalingStartupRows() {
+    if (!BeginStartupTable("##upscaling_startup")) {
+        return;
+    }
+    StartupRow(BbSettings::MenuText("Upscaling", "Upscaling"),
+               StartupOn("BB_FSR1", false) ? "AMD FSR 1.0" : BbSettings::MenuText("Off (bilinear)", "Off (bilinear)"));
+    // The launcher's sharpness levels as RCAS attenuation (stops: lower = sharper).
+    const char* attenuation = StartupValue("BB_RCAS_ATTENUATION", "");
+    const char* level = !std::strcmp(attenuation, "200")    ? BbSettings::MenuText("High", "High")
+                        : !std::strcmp(attenuation, "500")  ? BbSettings::MenuText("Medium", "Medium")
+                        : !std::strcmp(attenuation, "1000") ? BbSettings::MenuText("Low", "Low")
+                                                            : attenuation;
+    StartupRow(BbSettings::MenuText("Sharpening (RCAS)", "Sharpening (RCAS)"),
+               StartupOn("BB_RCAS", false) && level[0] ? level : BbSettings::MenuText("Off", "Выкл"));
+    EndStartupTable();
+}
+
 void Menu() {
     auto& s = BbSettings::Get();
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -218,11 +305,11 @@ void Menu() {
     ImGui::SetNextWindowPos(pos, ImGuiCond_Appearing);
     ImGui::SetNextWindowSize(ImVec2(620.0f * base_scale, 0.0f), ImGuiCond_Appearing);
     bool keep_open = true;
-    // SacredFire: the menu title.
+    // ufc3-mod: the menu title. The window fits each tab (the tabs differ much in height).
     if (!ImGui::Begin(
-            BbSettings::MenuText("SacredFire  (Insert / L3+R3)###bbport_settings",
-                                 "SacredFire  (Insert / L3+R3)###bbport_settings"),
-            &keep_open, ImGuiWindowFlags_NoCollapse)) {
+            BbSettings::MenuText("UFC 3 Settings  (Insert / L3+R3)###bbport_settings",
+                                 "UFC 3 Settings  (Insert / L3+R3)###bbport_settings"),
+            &keep_open, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::End();
         return;
     }
@@ -248,11 +335,25 @@ void Menu() {
     ImGui::Text(BbSettings::MenuText("%.0f FPS  (%.1f ms)", "%.0f FPS  (%.1f мс)"),
                 frame_ms_avg > 0.0f ? 1000.0f / frame_ms_avg : 0.0f, frame_ms_avg);
 
+    // ufc3-mod: tabs as a PC game's settings menu; L1/R1 switch them on a gamepad.
+    const bool tabs = ImGui::BeginTabBar("##settings_tabs");
+    if (tabs && ImGui::BeginTabItem(BbSettings::MenuText("Display", "Display"))) {
+        DisplayTab();
+        ImGui::EndTabItem();
+    }
+    if (tabs && ImGui::BeginTabItem(BbSettings::MenuText("Quality", "Quality"))) {
+        QualityTab();
+        ImGui::EndTabItem();
+    }
+    const bool upscaling_tab = tabs && ImGui::BeginTabItem(BbSettings::MenuText("Upscaling", "Upscaling"));
+    if (upscaling_tab) {
+        UpscalingStartupRows();
+    }
     // sacredfire: bbport's temporal upscalers, reactive mask and output scaling read the scene of
     // the game bbport was built for and stay off here (bbport_settings.cpp); their sections show
     // only with BB_UPSCALER_MENU=1, for experiments.
     static const bool upscaler_menu = std::getenv("BB_UPSCALER_MENU") != nullptr;
-    if (upscaler_menu) {
+    if (upscaling_tab && upscaler_menu) {
     ImGui::SeparatorText(BbSettings::MenuText("Temporal upscaler", "Временной апскейлер"));
     const char* upscalers[] = {
         BbSettings::MenuText("Off", "Выкл"), "FSR 3.1", "FSR 4 (INT8)", "FSR 4.1.1 (INT8)",
@@ -517,47 +618,18 @@ void Menu() {
         "Выключена: всё рисуется в разрешении пресета, смена — через перезапуск. Авто включает "
         "её на мощных дискретных видеокартах. Применяется после перезапуска игры."));
     }
-    // Game patches (patches/CrashTeamRacing.xml): bbport's own game-effect patches went with its
-    // Bloodborne profile (removed 2026-10-09).
-    ImGui::SeparatorText(BbSettings::MenuText("Game patches (restart required)",
-                                              "Патчи игры (после перезапуска)"));
-    for (int g = 0; g < BbSettings::GamePatchCount; ++g) {
-        const auto& patch = BbSettings::GamePatches[g];
-        Checkbox(BbSettings::MenuText(patch.label, patch.label_ru), s.game_patches[g]);
+    if (upscaling_tab) {
+        ImGui::EndTabItem();
     }
-    Hint(BbSettings::MenuText("From patches/CrashTeamRacing.xml (illusionyy/PS-Game-Patch), applied to the executable at start.",
-                              "Из patches/CrashTeamRacing.xml (illusionyy/PS-Game-Patch), применяются к исполняемому файлу при запуске."));
-    // SacredFire: the 60 FPS patch removes the game's cap altogether; the port limits it to 60
-    // unless this is on.
-    Checkbox(BbSettings::MenuText("Unlocked frame rate (with 60 FPS unlock)", "Без ограничения кадров (с 60 FPS)"), s.fps_unlocked);
-    Hint(BbSettings::MenuText("Off: 60 FPS. On: as fast as it renders; above 60 FPS the game's physics misbehave (slopes, ledges).",
-                              "Выкл: 60 FPS. Вкл: без ограничения; выше 60 FPS физика игры ведёт себя неверно (склоны, уступы)."));
-
-    bool restart =
-        s.object_motion != s.startup_object_motion || s.model_lod != s.startup_model_lod ||
-        s.live_resolution != s.startup_live_resolution || BbSettings::ResolutionNeedsRestart();
-    for (int e = 0; e < BbSettings::EffectCount; ++e) {
-        restart |= s.effects[e] != s.startup_effects[e];
-    }
-    for (int g = 0; g < BbSettings::GamePatchCount; ++g) {
-        restart |= s.game_patches[g] != s.startup_game_patches[g];
-    }
-    restart |= s.fps_unlocked != s.startup_fps_unlocked;
-    if (restart) {
-        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "%s",
-                           BbSettings::MenuText("Changes apply after restarting the game",
-                                                "Изменения применятся после перезапуска игры"));
-        if (ImGui::Button(
-                BbSettings::MenuText("Apply and restart game", "Применить и перезапустить игру"))) {
-            BbSettings::Save();
-            runtime_restart();
-        }
-    }
+    // ufc3-mod: SacredFire's Crash Team Racing items (its game patches from
+    // patches/CrashTeamRacing.xml and the 60 FPS unlock's frame-rate switch) do nothing in UFC 3
+    // and are no longer shown; their bbport.ini keys still load and save.
 
     // SacredFire: controller ports for split screen. Each port takes one connected gamepad; the
     // runtime logs the matching user in and reads that pad for it. Port 1 is the player.
-    ImGui::SeparatorText(BbSettings::MenuText("Controllers (local multiplayer)", "Контроллеры (локальная игра)"));
-    {
+    const bool controls_tab = tabs && ImGui::BeginTabItem(BbSettings::MenuText("Controls", "Controls"));
+    if (controls_tab) {
+        ImGui::SeparatorText(BbSettings::MenuText("Controllers (local multiplayer)", "Контроллеры (локальная игра)"));
         // UFC-72 (from PORTHEON): one player per controller (runtime_pad.c), and which pad each
         // player has now. Offline only: online the game keeps one local user.
         bool auto_players = s.local_multiplayer.load();
@@ -623,22 +695,49 @@ void Menu() {
         }
         ImGui::TextDisabled("%s", BbSettings::MenuText("Ports 2-4 log in as Player 2-4 while their gamepad is connected",
                                                  "Порты 2-4 входят как Player 2-4, пока подключён их геймпад"));
+        // SacredFire: the Steam Deck sometimes shows a controller connected after launch only to a
+        // fresh enumeration; the runtime restarts SDL's gamepad subsystem on the next input sample.
+        if (ImGui::Button(BbSettings::MenuText("Rescan controllers", "Переопознать контроллеры"))) {
+            pad_rescan_requested.store(true, std::memory_order_relaxed);
+        }
+        Hint(BbSettings::MenuText("For a controller connected after the game started and not seen by it.",
+                                  "Для контроллера, подключённого после запуска игры и не замеченного ею."));
+        ImGui::EndTabItem();
     }
 
-    ImGui::SeparatorText(BbSettings::MenuText("Other", "Прочее"));
-    Checkbox(BbSettings::MenuText("FPS counter in corner", "Счётчик FPS в углу"), s.show_fps);
-    Checkbox(BbSettings::MenuText("Trophy notifications", "Уведомления о трофеях"), s.trophy_notifications);
-    Hint(BbSettings::MenuText("Unlocked trophies are saved to trophies.json either way.",
-                              "Полученные трофеи сохраняются в trophies.json в любом случае."));
-    // SacredFire: the Steam Deck sometimes shows a controller connected after launch only to a
-    // fresh enumeration; the runtime restarts SDL's gamepad subsystem on the next input sample.
-    if (ImGui::Button(BbSettings::MenuText("Rescan controllers", "Переопознать контроллеры"))) {
-        pad_rescan_requested.store(true, std::memory_order_relaxed);
+    if (tabs && ImGui::BeginTabItem(BbSettings::MenuText("Other", "Прочее"))) {
+        Checkbox(BbSettings::MenuText("Trophy notifications", "Уведомления о трофеях"), s.trophy_notifications);
+        Hint(BbSettings::MenuText("Unlocked trophies are saved to trophies.json either way.",
+                                  "Полученные трофеи сохраняются в trophies.json в любом случае."));
+        ImGui::EndTabItem();
     }
-    Hint(BbSettings::MenuText("For a controller connected after the game started and not seen by it.",
-                              "Для контроллера, подключённого после запуска игры и не замеченного ею."));
+    if (tabs) {
+        ImGui::EndTabBar();
+    }
 
-    ImGui::Spacing();
+    // Under the tabs: whichever tab changed a setting that needs a restart.
+    bool restart =
+        s.object_motion != s.startup_object_motion || s.model_lod != s.startup_model_lod ||
+        s.live_resolution != s.startup_live_resolution || BbSettings::ResolutionNeedsRestart();
+    for (int e = 0; e < BbSettings::EffectCount; ++e) {
+        restart |= s.effects[e] != s.startup_effects[e];
+    }
+    for (int g = 0; g < BbSettings::GamePatchCount; ++g) {
+        restart |= s.game_patches[g] != s.startup_game_patches[g];
+    }
+    restart |= s.fps_unlocked != s.startup_fps_unlocked;
+    if (restart) {
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "%s",
+                           BbSettings::MenuText("Changes apply after restarting the game",
+                                                "Изменения применятся после перезапуска игры"));
+        if (ImGui::Button(
+                BbSettings::MenuText("Apply and restart game", "Применить и перезапустить игру"))) {
+            BbSettings::Save();
+            runtime_restart();
+        }
+    }
+
+    ImGui::Separator();
     if (ImGui::Button(BbSettings::MenuText("Close", "Закрыть"))) {
         keep_open = false;
     }

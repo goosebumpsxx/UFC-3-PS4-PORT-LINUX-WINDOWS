@@ -68,7 +68,7 @@ struct Values {
     /// UFC-72 (from PORTHEON): one player per controller (bbport.ini local_multiplayer; runtime_pad.c reads it):
     /// every gamepad beyond Player 1's is Player 2..4 without a port bound to it (offline only).
     std::atomic<bool> local_multiplayer{true};
-    std::atomic<MenuLanguage> menu_language{MenuLanguage::Russian};
+    std::atomic<MenuLanguage> menu_language{MenuLanguage::English}; ///< ufc3-mod: English until chosen (was Russian)
     std::atomic<int> upscaler{UpscalerFsr3};
     std::atomic<int> preset{NativeAA};
     std::atomic<bool> sharpen{true};
