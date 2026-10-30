@@ -19,6 +19,7 @@
 #include "imgui.h"
 #include "imgui_internal.h" // RegisterUserTexture (the trophy icons)
 #include "imgui_impl_vulkan.h"
+#include "broadcast/bbport_probe.h" // broadcast mod Phase 0 discovery (F9, BB_BROADCAST_PROBE)
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 
@@ -1022,6 +1023,12 @@ bool HandleEvent(const SDL_Event& event) {
     case SDL_EVENT_KEY_DOWN:
     case SDL_EVENT_KEY_UP: {
         const bool down = event.type == SDL_EVENT_KEY_DOWN;
+        if (down && !event.key.repeat && event.key.key == SDLK_F9 && BroadcastProbe::Enabled()) {
+            // Broadcast mod discovery (BB_BROADCAST_PROBE=1): not consumed, the game maps no F9.
+            BroadcastProbe::Request();
+            std::printf("Probe: broadcast discovery scan requested (F9)\n");
+            return false;
+        }
         if (down && !event.key.repeat &&
             (event.key.key == SDLK_INSERT || (is_open && event.key.key == SDLK_ESCAPE))) {
             SetOpen(event.key.key == SDLK_INSERT ? !is_open : false);
