@@ -783,8 +783,8 @@ struct CaptureEvent {
     bool is_fast;
 };
 
-constexpr unsigned EntryMax = 128;
-constexpr unsigned ValueMax = 2048;
+constexpr unsigned EntryMax = 512;
+constexpr unsigned ValueMax = 16384;
 
 CaptureEvent entries[EntryMax];
 CaptureEvent values[ValueMax];
@@ -1075,7 +1075,7 @@ void ArmCapture() {
     log("Probe: getter capture armed at 0x%llx + fast read 0x%llx, %u reads\n",
         (unsigned long long)GetterEntry, (unsigned long long)FastReadEntry, ValueMax);
     std::thread([] {
-        std::this_thread::sleep_for(std::chrono::seconds(8));
+        std::this_thread::sleep_for(std::chrono::seconds(20));
         DisarmCapture();
         FlushCaptures(*capture_log);
     }).detach();
