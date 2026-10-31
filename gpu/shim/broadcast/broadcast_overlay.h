@@ -7,6 +7,45 @@
 
 namespace Broadcast {
 
+/// The drawing frame: display size in pixels plus the pixel scale (display height over 1080, never
+/// below 0.75, times ui_scale). Every position in this module is a fraction of the frame.
+struct Canvas {
+    float width = 1.0f;
+    float height = 1.0f;
+    float scale = 1.0f;
+};
+
+enum class TextAlign {
+    Left,
+    Centre,
+    Right,
+};
+
+/// The canvas for one frame at `ui_scale`. Both Phase 1's demo card and Phase 2's stat card draw
+/// through the helpers below, so they land in the same place at every resolution.
+Canvas MakeCanvas(float width, float height);
+
+/// Packed RGBA in the order ImGui wants it (0xAABBGGRR).
+constexpr std::uint32_t Rgba(int r, int g, int b, int a) {
+    return std::uint32_t(r) | (std::uint32_t(g) << 8) | (std::uint32_t(b) << 16) |
+           (std::uint32_t(a) << 24);
+}
+
+float TextWidth(const Canvas& canvas, const char* text);
+float TextLineHeight(const Canvas& canvas);
+
+/// Text at (x, y) in fractions; y is the top of the line.
+void DrawText(const Canvas& canvas, float x, float y, const char* text, std::uint32_t colour,
+              TextAlign align = TextAlign::Left);
+
+/// Filled rectangle: (x, y) top-left and (w, h) size, all fractions. `rounding` is in pixels.
+void DrawRect(const Canvas& canvas, float x, float y, float w, float h, std::uint32_t colour,
+              float rounding = 0.0f);
+
+/// Horizontal bar: a track with a fill of `fraction` (clamped to 0..1).
+void DrawBar(const Canvas& canvas, float x, float y, float w, float h, float fraction,
+             std::uint32_t fill, std::uint32_t track);
+
 /// Reads broadcast_mod.ini. Called once from BbOverlay::Init(), before the first frame.
 void Init();
 

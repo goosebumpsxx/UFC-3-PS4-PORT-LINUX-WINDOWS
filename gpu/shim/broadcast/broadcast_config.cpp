@@ -86,6 +86,19 @@ std::uint32_t KeyFromName(const std::string& name) {
     return std::uint32_t(SDLK_UNKNOWN);
 }
 
+/// A seconds value: clamped to [low, high]; bad text keeps the default and says so once.
+float ParseSeconds(const std::string& value, float fallback, const char* key, float low,
+                   float high) {
+    char* end = nullptr;
+    const float parsed = std::strtof(value.c_str(), &end);
+    if (end == value.c_str() || *end != '\0' || !(parsed >= 0.0f)) {
+        std::printf("Broadcast: %s = '%s' is not a number, keeping %.2f\n", key, value.c_str(),
+                    double(fallback));
+        return fallback;
+    }
+    return std::clamp(parsed, low, high);
+}
+
 void WriteDefaults(const std::string& path) {
     FILE* file = std::fopen(path.c_str(), "w");
     if (!file) {
@@ -93,14 +106,23 @@ void WriteDefaults(const std::string& path) {
         return;
     }
     std::fprintf(file,
-                 "# Broadcast mod settings. Feature switches belong to the later phases; only the\n"
-                 "# demo card of Phase 1 is drawn today. ui_scale is clamped to 0.5-3.0.\n"
+                 "# Broadcast mod settings.\n"
+                 "# enabled: master switch. stat_popups: the Phase 2 card. ui_scale: 0.5-3.0.\n"
+                 "# popup_seconds / popup_delay / knockdown_seconds: the card's timing, in seconds.\n"
+                 "# card_key: show the fight so far on demand. debug_card: the Phase 1 demo card.\n"
+                 "# dump_stats: log the raw stat cells when the card key is pressed (a support aid).\n"
                  "enabled = true\n"
                  "stat_popups = true\n"
                  "momentum_meter = true\n"
                  "scorecard_reveal = true\n"
                  "ui_scale = 1.0\n"
-                 "toggle_key = F8\n");
+                 "toggle_key = F8\n"
+                 "popup_seconds = 5\n"
+                 "popup_delay = 15\n"
+                 "knockdown_seconds = 3\n"
+                 "card_key = F7\n"
+                 "debug_card = false\n"
+                 "dump_stats = false\n");
     std::fclose(file);
     std::printf("Broadcast: wrote the defaults to %s\n", path.c_str());
 }
@@ -155,6 +177,24 @@ void LoadConfig() {
             } else {
                 config.toggle_key = Upper(value);
             }
+        } else if (key == "popup_seconds") {
+            config.popup_seconds = ParseSeconds(value, config.popup_seconds, "popup_seconds", 1.0f, 30.0f);
+        } else if (key == "popup_delay") {
+            config.popup_delay = ParseSeconds(value, config.popup_delay, "popup_delay", 0.0f, 300.0f);
+        } else if (key == "knockdown_seconds") {
+            config.knockdown_seconds =
+                ParseSeconds(value, config.knockdown_seconds, "knockdown_seconds", 1.0f, 30.0f);
+        } else if (key == "card_key") {
+            if (KeyFromName(value) == std::uint32_t(SDLK_UNKNOWN)) {
+                std::printf("Broadcast: card_key = '%s' is not F1-F12 or A-Z, keeping %s\n",
+                            value.c_str(), config.card_key.c_str());
+            } else {
+                config.card_key = Upper(value);
+            }
+        } else if (key == "debug_card") {
+            config.debug_card = ParseBool(value, config.debug_card, "debug_card");
+        } else if (key == "dump_stats") {
+            config.dump_stats = ParseBool(value, config.dump_stats, "dump_stats");
         }
         // Unknown keys are ignored: later phases will add their own.
     }
@@ -169,6 +209,10 @@ const Config& GetConfig() {
 
 std::uint32_t ToggleKeyCode() {
     return KeyFromName(config.toggle_key);
+}
+
+std::uint32_t CardKeyCode() {
+    return KeyFromName(config.card_key);
 }
 
 } // namespace Broadcast
