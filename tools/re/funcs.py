@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Function bounds of the UFC3 eboot from .eh_frame_hdr (flat image, VA = file - 0x4000)."""
+"""Function bounds of the UFC3 eboot from .eh_frame_hdr (VA = eboot.elf offset - 0x12850; see the limit in reargs.py)."""
 import struct
 import sys
 
@@ -7,7 +7,7 @@ import reargs
 
 FUNCS = reargs.funcs()
 PATH = reargs.eboot()
-DELTA = 0x4000
+DELTA = -0x12850  # VA = file offset - DELTA: eboot.elf offset = VA + 0x12850 (notes §3.4.1)
 MAGIC = 0x3B031B01
 
 data = open(PATH, 'rb').read()

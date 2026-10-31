@@ -16,6 +16,7 @@
 // can neither crash the game nor change its state. The result goes to stdout and to
 // broadcast_probe.log next to bbport.ini.
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdarg>
 #include <cstdint>
@@ -439,6 +440,75 @@ int TargetClocks(std::uint32_t* values, int max) {
     return count;
 }
 
+/// For each word that ticked down, look for the pause menu's numbers in the 8 KiB either side. The
+/// fight statistics and the round clock live in the same object, so a clock word surrounded by three
+/// or more of the values read off the pause menu is the record we are after.
+int ScanNearClockCandidates(const std::vector<uintptr_t>& clocks, const std::uint32_t* values,
+                            int value_count, Log& log) {
+    if (value_count < 2) {
+        return 0;
+    }
+    const long radius = 8192;
+    const std::size_t words = std::size_t(radius * 2) / 4;
+    std::vector<std::uint32_t> window(words);
+    int found = 0;
+    for (uintptr_t clock : clocks) {
+        if (clock < uintptr_t(radius)) {
+            continue;
+        }
+        const uintptr_t start = clock - uintptr_t(radius);
+        if (!SafeCopy(window.data(), start, words * 4)) {
+            continue;
+        }
+        struct Hit {
+            long offset;
+            std::uint32_t value;
+        };
+        std::vector<Hit> hits;
+        bool seen[8] = {};
+        int distinct = 0;
+        for (std::size_t i = 0; i < words; ++i) {
+            const std::uint32_t word = window[i];
+            if (word > 100000) {
+                continue;
+            }
+            for (int v = 0; v < value_count; ++v) {
+                if (word == values[v]) {
+                    hits.push_back({long(i) * 4 - radius, word});
+                    if (!seen[v]) {
+                        seen[v] = true;
+                        ++distinct;
+                    }
+                    break;
+                }
+            }
+        }
+        if (distinct < 3) {
+            continue;
+        }
+        log("Probe: === clock 0x%llx: %d of the pause-menu value(s) within %ld bytes\n",
+            (unsigned long long)clock, distinct, radius);
+        int printed = 0;
+        for (const Hit& hit : hits) {
+            log("Probe:     %+ld = %u\n", hit.offset, hit.value);
+            if (++printed >= 40) {
+                log("Probe:     ...\n");
+                break;
+            }
+        }
+        if (!hits.empty()) {
+            Dump(log, start + uintptr_t(hits.front().offset) - 64, 320);
+        }
+        if (++found >= 6) {
+            break;
+        }
+    }
+    if (found == 0) {
+        log("Probe: no countdown candidate had 3+ pause-menu value(s) within %ld bytes\n", radius);
+    }
+    return found;
+}
+
 /// Look for the stat block by the clock's value instead of by its movement: every word that holds
 /// one of the values shown on screen (or one next to it) is reported, and a projected base that
 /// also passes the block test is printed in full.
@@ -627,6 +697,11 @@ void Scan() {
             index += count;
         }
     }
+    std::vector<uintptr_t> countdown_clocks;
+    countdown_clocks.reserve(candidates.size());
+    for (const Candidate& candidate : candidates) {
+        countdown_clocks.push_back(candidate.address);
+    }
     log("Probe: %zu countdown candidate(s)\n", candidates.size());
     for (const Candidate& candidate : candidates) {
         if (candidate.before >= 20 && candidate.before - candidate.after <= 12) {
@@ -664,13 +739,286 @@ void Scan() {
     if (found == 0) {
         log("Probe: no stat block under the id-indexed hypothesis\n");
     }
+    const int near = ScanNearClockCandidates(countdown_clocks, values, value_count, log);
+    if (near > 0) {
+        found += near;
+    }
     log("Probe: scan finished in %.2f s, %d block(s)\n",
         std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count(), found);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Getter capture (Windows): BB_BROADCAST_CAPTURE=1 arms it, F10 in game runs it.
+//
+// Guest 0x1bb180 is `(context, id, out, type) -> int`: it calls [context->vtable + 0x10] and stores
+// the result through `out`. Replacing its first byte (`push rbp`) with int3 and catching the trap in
+// a vectored handler gives (rdi context, rdx id, rcx out) for every stat read in the game, which is
+// the one thing the id-indexed scans could not provide. The handler re-executes the stolen `push rbp`
+// by hand, so the game continues unchanged.
+#ifdef _WIN32
+#include <windows.h>
+
+// The image is mapped at 0x800000000 + (file offset - 0x12850): 0x1bb180 in the file is 0x1ac930
+// in guest memory (verified against the running game, three functions at once).
+constexpr uintptr_t GetterEntry = ImageBase + 0x1ac930;
+/// The integer stat read inside the getter: `mov ecx,[rax+rcx]`.
+constexpr uintptr_t IntSite = ImageBase + 0x1acb77;
+/// The float stat read inside the getter: `vcvttss2si ecx,[rax+rcx]`.
+constexpr uintptr_t FloatSite = ImageBase + 0x1acbd7;
+
+struct CaptureEvent {
+    std::uint32_t id;
+    std::uint32_t side;
+    std::uint64_t context;
+    std::uint64_t base;
+    std::int64_t offset;
+    std::int64_t value;
+    std::int32_t start;
+    std::int32_t stride;
+    std::uint64_t slot;
+};
+
+constexpr unsigned EntryMax = 128;
+constexpr unsigned ValueMax = 2048;
+
+CaptureEvent entries[EntryMax];
+CaptureEvent values[ValueMax];
+std::atomic<unsigned> entry_count{0};
+std::atomic<unsigned> value_count{0};
+std::atomic<unsigned> capture_limit{0};
+PVOID capture_handler = nullptr;
+unsigned char* capture_code = nullptr;
+unsigned char* capture_int_site = nullptr;
+unsigned char* capture_float_site = nullptr;
+std::atomic<bool> capture_armed{false};
+Log* capture_log = nullptr;
+
+/// Puts the patched bytes back and unhooks. Safe from the trap handler: it never runs them.
+void DisarmCapture() {
+    if (!capture_armed.exchange(false)) {
+        return;
+    }
+    auto restore = [](unsigned char* site, unsigned char byte) {
+        if (!site) {
+            return;
+        }
+        DWORD old = 0;
+        if (VirtualProtect(site, 16, PAGE_EXECUTE_READWRITE, &old)) {
+            *site = byte;
+            VirtualProtect(site, 16, old, &old);
+            FlushInstructionCache(GetCurrentProcess(), site, 1);
+        }
+    };
+    restore(capture_code, 0x55);
+    restore(capture_int_site, 0x8b);
+    restore(capture_float_site, 0xc5);
+    if (capture_handler) {
+        RemoveVectoredExceptionHandler(capture_handler);
+        capture_handler = nullptr;
+    }
+    if (capture_log) {
+        (*capture_log)("Probe: getter capture disarmed\n");
+    }
+}
+
+/// Records one stat read: `base + offset` is where the game just loaded the value from.
+/// One row per stat cell: a cell read again on a later frame only refreshes its value.
+void RecordRead(const CONTEXT* context, bool is_float) {
+    CaptureEvent event{};
+    event.id = static_cast<std::uint32_t>(context->R12);
+    event.side = static_cast<std::uint32_t>(context->R14);
+    event.base = context->Rax;
+    event.offset = static_cast<std::int64_t>(context->Rcx);
+    event.slot = context->Rax + context->Rcx;
+    std::int32_t local = 0;
+    if (SafeCopy(&local, context->Rbp - 0x48, sizeof(local))) {
+        event.start = local;
+    }
+    if (SafeCopy(&local, context->Rbp - 0x40, sizeof(local))) {
+        event.stride = local;
+    }
+    if (is_float) {
+        float raw = 0.0f;
+        if (SafeCopy(&raw, event.slot, sizeof(raw))) {
+            event.value = static_cast<std::int64_t>(raw);
+        }
+    } else {
+        std::int32_t raw = 0;
+        if (SafeCopy(&raw, event.slot, sizeof(raw))) {
+            event.value = raw;
+        }
+    }
+    const unsigned total = std::min(value_count.load(), ValueMax);
+    for (unsigned i = 0; i < total; ++i) {
+        CaptureEvent& known = values[i];
+        if (known.id == event.id && known.side == event.side && known.slot == event.slot) {
+            known.value = event.value;
+            return;
+        }
+    }
+    const unsigned index = value_count.fetch_add(1);
+    if (index < ValueMax) {
+        values[index] = event;
+    }
+}
+
+LONG CALLBACK OnCaptureTrap(EXCEPTION_POINTERS* info) {
+    if (!info || !info->ExceptionRecord || info->ExceptionRecord->ExceptionCode != EXCEPTION_BREAKPOINT) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    const std::uintptr_t address =
+        reinterpret_cast<std::uintptr_t>(info->ExceptionRecord->ExceptionAddress);
+    CONTEXT* context = info->ContextRecord;
+    if (address == GetterEntry) {
+        const unsigned index = entry_count.fetch_add(1);
+        if (index < EntryMax) {
+            entries[index].id = static_cast<std::uint32_t>(context->Rsi);
+            entries[index].side = static_cast<std::uint32_t>(context->Rdx);
+            entries[index].context = context->Rdi;
+        }
+        // The breakpoint replaced `push rbp`: do it by hand and resume after it.
+        context->Rsp -= 8;
+        *reinterpret_cast<std::uint64_t*>(context->Rsp) = context->Rbp;
+        context->Rip = GetterEntry + 1;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (address == IntSite) {
+        std::int32_t raw = 0;
+        SafeCopy(&raw, context->Rax + context->Rcx, sizeof(raw));
+        RecordRead(context, false);
+        context->Rcx = static_cast<std::uint32_t>(raw);
+        context->Rip = IntSite + 3;
+        if (value_count.load() >= capture_limit.load()) {
+            DisarmCapture();
+        }
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (address == FloatSite) {
+        float raw = 0.0f;
+        std::int32_t converted = 0;
+        if (SafeCopy(&raw, context->Rax + context->Rcx, sizeof(raw))) {
+            converted = static_cast<std::int32_t>(raw);
+        }
+        RecordRead(context, true);
+        context->Rcx = static_cast<std::uint32_t>(converted);
+        context->Rip = FloatSite + 5;
+        if (value_count.load() >= capture_limit.load()) {
+            DisarmCapture();
+        }
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+/// Reports the captured reads: id, side, the address the value came from and the value itself.
+void FlushCaptures(Log& log) {
+    const unsigned entry_total = std::min(entry_count.load(), EntryMax);
+    log("Probe: getter entry: %u call(s)\n", entry_total);
+    std::uint64_t contexts[4] = {};
+    int context_count = 0;
+    for (unsigned i = 0; i < entry_total; ++i) {
+        const CaptureEvent& event = entries[i];
+        log("Probe:   entry id %u side %u  context 0x%llx\n", event.id, event.side,
+            (unsigned long long)event.context);
+        if (context_count < 4 && event.context &&
+            std::find(std::begin(contexts), std::end(contexts), event.context) == std::end(contexts)) {
+            contexts[context_count++] = event.context;
+        }
+    }
+    const unsigned value_total = std::min(value_count.load(), ValueMax);
+    log("Probe: value read: %u call(s)\n", value_total);
+    for (unsigned i = 0; i < value_total; ++i) {
+        const CaptureEvent& event = values[i];
+        log("Probe:   read id %u side %u  base 0x%llx off %lld -> 0x%llx = %lld  start %d stride %d\n",
+            event.id, event.side, (unsigned long long)event.base, (long long)event.offset,
+            (unsigned long long)event.slot, (long long)event.value, event.start, event.stride);
+    }
+    for (int index = 0; index < context_count; ++index) {
+        const std::uint64_t context = contexts[index];
+        std::uint8_t dump[0x200] = {};
+        if (!SafeCopy(dump, context, sizeof(dump))) {
+            log("Probe: context 0x%llx unreadable\n", (unsigned long long)context);
+            continue;
+        }
+        log("Probe: context 0x%llx (first 0x200 bytes, qword view)\n", (unsigned long long)context);
+        for (std::size_t row = 0; row < sizeof(dump); row += 32) {
+            std::uint64_t words[4] = {};
+            std::memcpy(words, dump + row, sizeof(words));
+            log("Probe:   +0x%03zx  0x%016llx 0x%016llx 0x%016llx 0x%016llx\n", row,
+                (unsigned long long)words[0], (unsigned long long)words[1],
+                (unsigned long long)words[2], (unsigned long long)words[3]);
+        }
+    }
+}
+
+/// Arms the capture: F10 in game (BB_BROADCAST_CAPTURE=1), then the next stat reads are recorded.
+void ArmCapture() {
+    if (capture_armed.exchange(true)) {
+        return;
+    }
+    static Log log;
+    capture_log = &log;
+    capture_code = reinterpret_cast<unsigned char*>(GetterEntry);
+    capture_int_site = reinterpret_cast<unsigned char*>(IntSite);
+    capture_float_site = reinterpret_cast<unsigned char*>(FloatSite);
+    DWORD old = 0;
+    struct Site {
+        unsigned char* address;
+        unsigned char expected;
+        unsigned char patch;
+        const char* name;
+    } sites[3] = {
+        {capture_code, 0x55, 0xCC, "getter"},
+        {capture_int_site, 0x8b, 0xCC, "int read"},
+        {capture_float_site, 0xc5, 0xCC, "float read"},
+    };
+    for (Site& site : sites) {
+        if (!VirtualProtect(site.address, 16, PAGE_EXECUTE_READWRITE, &old)) {
+            log("Probe: getter capture: cannot write guest code (%lu)\n", GetLastError());
+            capture_armed = false;
+            return;
+        }
+        if (*site.address != site.expected) {
+            log("Probe: getter capture: %s site at 0x%llx starts with 0x%02x, expected 0x%02x\n",
+                site.name, (unsigned long long)reinterpret_cast<std::uintptr_t>(site.address),
+                *site.address, site.expected);
+            VirtualProtect(site.address, 16, old, &old);
+            capture_armed = false;
+            return;
+        }
+    }
+    entry_count = 0;
+    value_count = 0;
+    capture_limit = ValueMax;
+    capture_handler = AddVectoredExceptionHandler(1, OnCaptureTrap);
+    if (!capture_handler) {
+        log("Probe: getter capture: no exception handler (%lu)\n", GetLastError());
+        capture_armed = false;
+        return;
+    }
+    for (Site& site : sites) {
+        *site.address = site.patch;
+        FlushInstructionCache(GetCurrentProcess(), site.address, 1);
+    }
+    log("Probe: getter capture armed at 0x%llx, %u reads\n", (unsigned long long)GetterEntry, ValueMax);
+    std::thread([] {
+        std::this_thread::sleep_for(std::chrono::seconds(8));
+        DisarmCapture();
+        FlushCaptures(*capture_log);
+    }).detach();
+}
+#else
+void ArmCapture() {}
+void DisarmCapture() {}
+#endif
+
 void Request() {
     // Its own thread: the scan sleeps 1.5 s between the two passes and must not stall a frame.
     std::thread([] { Scan(); }).detach();
+}
+
+void Arm() {
+    ArmCapture();
 }
 
 } // namespace BroadcastProbe

@@ -122,7 +122,7 @@ whole image (checked against `bbport_guest_hooks.cpp` addresses). The tools used
 So the live values are behind `[vtable+0x10]` on a context object, and the missing link is that
 object's address (and, with it, the vtable's implementation of the getter).
 
-### 3.4 Closing it
+### 3.4 Closing it (superseded by §3.4.1 — route 1 was built and works)
 
 Two ways, both small:
 
@@ -150,6 +150,87 @@ consecutive integers that merely contain 13, 26, 36, 63), so the pair search is 
 One practical note for that run: the pause menu can be opened **during the walk-in**, where it shows
 `R1 5:00` and all zeros — the numbers only mean something after the bell, i.e. once the clock is
 below 5:00. The first attempts were paused there by mistake.
+
+### 3.4.1 Result (31 Oct 2026): the getter, its cells, and reading any stat
+
+**Route 1 was built and it works.** Three `int3` sites are armed from the probe (F10, 8 s window,
+auto-disarm): the getter entry `ImageBase+0x1ac930`, the int load `0x1acb77` (`8b 0c 08` =
+`mov ecx,[rax+rcx]`) and the float load `0x1acbd7` (`c5 fa 2c 0c 08` = `vcvttss2si ecx,[rax+rcx]`).
+A vectored exception handler re-executes the overwritten instruction by hand (the entry trap performs
+`push rbp`; the load traps emulate the load and resume past it), so the game never notices, and the
+original bytes (`0x55` / `0x8b` / `0xc5`) are restored when the window closes.
+
+**Guest address mapping is `file offset = VA + 0x12850`**, not `VA - 0x4000` as §3.3 says; that was a
+mis-read program header. Checked at runtime on three functions at once, byte for byte, against
+`CUSA06534-merged/eboot.bin` (getter `0x1ac930` = file `0x1bf1d0`, caller `0x1ac180` = file
+`0x1be9d0`, `0x1b14a0` = file `0x1c3cf0`). Guest address = `0x800000000 + VA`.
+
+Two corrections (31 Oct): those file offsets are for `eboot.bin`; in the decrypted `eboot.elf` the
+code sits `0x50` earlier, i.e. **`eboot.elf` offset = VA + 0x12850** (getter `0x1ac930` = `0x1bf180`,
+bytes `55 48 89 e5`). And that offset holds for the **code segment only**: `eboot.elf` is a PS4 SELF
+with several segments, so `tools/re` (now `DELTA = -0x12850`) disassembles code correctly but
+string, `.eh_frame_hdr` and data lookups (`strrefs`, `funcs`, `addrrefs`) stay wrong until the
+scripts map each segment separately. `funcs.txt` made with either offset is unreliable.
+
+**The getter** `0x1ac930(context, id, out, type)` — `rdi` context, `esi` id, `rdx` out, `ecx` side:
+
+- `cmp dword [rbx+0x68], 2` then `call *0x38(%rax)` / `call *0x10(%rax)` (context vtable +0x10 =
+  `0x1ac980`), which returns the descriptor that holds the storage;
+- index math out of the descriptor: `start` (`[rbp-0x48]`), `stride` (`[rbp-0x40]`, normally 4),
+  `base` (`[rbp-0x60]`), then the value is loaded at `base + (index - start) * stride`; `id 0xe00` and
+  `id 0x526` are special-cased.
+- The context is a per-fight singleton — `0x7005ddb0d0` in every capture, vtable `0x80240aaf0`, and
+  the getter family (`0x1ac980`, `0x1ac930`, `0x1ac180`, `0x1acc40`, `0x1acd10`, …) sits on that
+  vtable. `[context+0x68] == 2`, `[context+0xc8] == 0`.
+
+**The cells.** A statistic lives in a 0x30-byte record, allocated in a per-fight arena (all of the
+observed cells sat inside `0x7005120000`-`0x7005145000`):
+
+| offset | contents |
+| --- | --- |
+| `+0x00` | `noa::datatype` descriptor (`0x8025158e0`) |
+| `+0x08` | type meta (`0x802982de0`) |
+| `+0x10` | heap pointer to the descriptor header (`noa::datatype`, element size 4) |
+| `+0x18` | flags `0x0001002000000000` |
+| `+0x20` | **int64 value** — this is what the getter returns |
+| `+0x28` | 0 |
+
+Array-typed statistics (per fighter/per target) use `base` = the same record and `stride 4`, with
+`start = -1`: side-1 reads come back as `off 4`, `off 8`, … on the *same* base.
+
+**Three independent pauses, same cells, values match the pause menu exactly** (§5's test):
+
+| pause | pause-menu clock | `id 4454` ROUND_TIME_REMAINING | cell | menu round | `id 9910` | `id 7241` |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | `R1 0:48` | 48 | `0x7005135740` | R1 | 1 | 5 |
+| 2 | `R1 0:06` | 6 | `0x7005135740` | R1 | 1 | 5 |
+| 3 | `R1 0:00` | 0 | `0x7005135740` | R1 (ROUND 2 tab) | 1 | 5 |
+
+Three different values, one cell, no drift between pauses. `7241` = 5 matches the setup screen's
+"5 ROUNDS". And while the fight is running the cell ticks like the HUD: sampled once a second for
+12 s it read `201 199 197 196 194 192 191 189 187 186 184 182` — the accelerated clock loses 2 s per
+real second.
+
+**Identity is the id, not a fixed address.** Cells moved between fights (the arena is re-allocated:
+`0x7005133770` in one session, `0x7005135740` in the next), so Phase 1 must not hardcode addresses.
+What is stable is the `(id, side)` → cell mapping inside a fight, which is exactly what the trap
+returns. Design for Phase 1: arm once when a fight starts, cache `(id, side) → (cell, stride, start)`,
+then read the cells directly every frame; re-arm if a cached cell stops looking like a stat cell.
+
+**What the trap does *not* see (open).** The pause menu's strike totals (e.g. significant `23 / 32`)
+never appeared in a capture, even when the stats page was rendered inside the window — so the
+scorecard numbers are read through a different accessor (sibling vtable slots such as `0x1acd10`,
+`0x1acc40`) or a plain array walk, not through the two load sites above. Next step for Phase 1 is to
+patch the load sites of those siblings the same way. Everything the HUD needs (clock, round, round
+max, health, stamina) is already covered; captured ids in one live round included `4454 9910 7241
+7001-7008 5003 3640 5945 8763 5420 5856 8366 8927 7145 4157 4156` and ~45 more.
+
+**Enumerating cells by shape does not work on its own.** `ap_cells.py` scans guest RAM for the flags
+word plus the type/meta pair and finds ~14 000 hits in 12 s, but the triple also appears on every
+`noa::datatype` property in the game, so it is a first pass only.
+
+**Cost of a capture.** One row per `(id, side, slot)` (deduplicated, value refreshed), ~60 rows per
+8 s window; running inside the live fight it never disturbs the game.
 
 ### 3.5 Damage by zone
 

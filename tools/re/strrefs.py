@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Find RIP-relative references to given strings in the UFC3 eboot (PS4 SELF, VA = file - 0x4000)."""
+"""Find RIP-relative references to given strings in the UFC3 eboot (VA = eboot.elf offset - 0x12850)."""
 import struct
 import sys
 
 import reargs
 
 PATH = reargs.eboot()
-DELTA = 0x4000  # VA = file offset - DELTA
+DELTA = -0x12850  # VA = file offset - DELTA: eboot.elf offset = VA + 0x12850 (notes §3.4.1)
 
 data = open(PATH, 'rb').read()
 print('file size', hex(len(data)))
@@ -18,7 +18,7 @@ def find_all(needle):
         i = data.find(needle, i + 1)
     return out
 
-def refs_to(target_va, lo=0x4000, hi=None):
+def refs_to(target_va, lo=0, hi=None):
     hi = hi or len(data)
     hits = []
     for i in range(lo, min(hi, len(data)) - 8):

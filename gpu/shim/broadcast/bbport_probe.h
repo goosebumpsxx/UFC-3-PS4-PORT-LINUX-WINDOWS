@@ -10,4 +10,7 @@ bool Enabled();
 /// Starts a scan on its own thread (a scan takes a few seconds; the caller keeps rendering).
 void Request();
 
+/// BB_BROADCAST_CAPTURE=1: F10 records every stat read through guest 0x1bb180 for six seconds.
+void Arm();
+
 } // namespace BroadcastProbe

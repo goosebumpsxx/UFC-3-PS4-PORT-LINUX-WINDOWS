@@ -6,7 +6,7 @@ import sys
 import reargs
 
 PATH = reargs.eboot()
-DELTA = 0x4000
+DELTA = -0x12850  # VA = file offset - DELTA: eboot.elf offset = VA + 0x12850 (notes §3.4.1)
 BASE = 0x800000000
 data = open(PATH, 'rb').read()
 

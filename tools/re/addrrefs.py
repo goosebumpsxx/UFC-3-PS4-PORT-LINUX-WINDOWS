@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RIP-relative references to a code/data address in the flat UFC3 image (VA = file - 0x4000)."""
+"""RIP-relative references to a code/data address in the flat UFC3 image (VA = eboot.elf offset - 0x12850)."""
 import struct
 import sys
 
@@ -7,7 +7,7 @@ import reargs
 
 FUNCS = reargs.funcs()
 PATH = reargs.eboot()
-DELTA = 0x4000
+DELTA = -0x12850  # VA = file offset - DELTA: eboot.elf offset = VA + 0x12850 (notes §3.4.1)
 data = open(PATH, 'rb').read()
 funcs = []
 for line in open(FUNCS):
@@ -26,7 +26,7 @@ def owner(t):
 
 def refs_to(target_va):
     hits = []
-    for i in range(DELTA, len(data) - 8):
+    for i in range(0, len(data) - 8):
         b0 = data[i]; b1 = data[i + 1]; b2 = data[i + 2]
         if b0 in (0x48, 0x4C, 0x49, 0x4D) and b1 in (0x8D, 0x8B, 0x89, 0x39, 0x3B, 0x03) and (b2 & 0xC7) == 0x05:
             disp, = struct.unpack_from('<i', data, i + 3)

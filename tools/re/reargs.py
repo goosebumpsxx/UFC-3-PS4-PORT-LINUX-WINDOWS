@@ -4,6 +4,12 @@
 --funcs PATH  the function list funcs.py writes (or UFC3_FUNCS; default funcs.txt)
 
 Both options are removed from sys.argv, so each script reads its own arguments as before.
+
+Limit: the scripts use one offset, DELTA = -0x12850 (eboot.elf offset = VA + 0x12850). That is
+right for the code segment only (checked on the getter 0x1ac930 and its loads 0x1acb77/0x1acbd7).
+eboot.elf is a PS4 SELF with several segments; strings, .eh_frame_hdr (funcs.py) and data sit in
+segments with other offsets, so strrefs/funcs/addrrefs results are wrong until a per-segment map
+replaces DELTA (docs/ufc3/BROADCAST-MOD-PHASE0.md section 3.4.1).
 """
 import os
 import sys

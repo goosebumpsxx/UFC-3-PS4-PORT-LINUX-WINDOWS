@@ -1023,6 +1023,13 @@ bool HandleEvent(const SDL_Event& event) {
     case SDL_EVENT_KEY_DOWN:
     case SDL_EVENT_KEY_UP: {
         const bool down = event.type == SDL_EVENT_KEY_DOWN;
+        if (down && !event.key.repeat && event.key.key == SDLK_F10 &&
+            std::getenv("BB_BROADCAST_CAPTURE")) {
+            // Broadcast mod Phase 0: capture the stat getter's arguments (F10).
+            BroadcastProbe::Arm();
+            std::printf("Probe: getter capture requested (F10)\n");
+            return false;
+        }
         if (down && !event.key.repeat && event.key.key == SDLK_F9 && BroadcastProbe::Enabled()) {
             // Broadcast mod discovery (BB_BROADCAST_PROBE=1): not consumed, the game maps no F9.
             BroadcastProbe::Request();

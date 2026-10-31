@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Disassemble around a VA of the flat UFC3 image (VA = file - 0x4000), from its function start.
+"""Disassemble around a VA of the flat UFC3 image (VA = eboot.elf offset - 0x12850), from its function start.
 
 usage: disas.py VA [before] [after]
 Only instructions inside [VA-before, VA+after] are printed; decoding starts at the function
@@ -14,7 +14,7 @@ import reargs
 
 FUNCS = reargs.funcs()
 PATH = reargs.eboot()
-DELTA = 0x4000
+DELTA = -0x12850  # VA = file offset - DELTA: eboot.elf offset = VA + 0x12850 (notes §3.4.1)
 data = open(PATH, 'rb').read()
 
 funcs = []
