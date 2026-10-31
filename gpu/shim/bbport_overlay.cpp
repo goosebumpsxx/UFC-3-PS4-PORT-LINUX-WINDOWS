@@ -20,6 +20,7 @@
 #include "imgui_internal.h" // RegisterUserTexture (the trophy icons)
 #include "imgui_impl_vulkan.h"
 #include "broadcast/bbport_probe.h" // broadcast mod Phase 0 discovery (F9, BB_BROADCAST_PROBE)
+#include "broadcast/broadcast_overlay.h" // broadcast mod Phase 1 overlay
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 
@@ -995,6 +996,7 @@ void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count) 
         }
         std::printf("Overlay: BB_TROPHY_TEST: two trophy toasts queued\n");
     }
+    Broadcast::Init(); // broadcast mod
 }
 
 void UpdateTextInput(SDL_Window* window) {
@@ -1028,6 +1030,11 @@ bool HandleEvent(const SDL_Event& event) {
             // Broadcast mod Phase 0: capture the stat getter's arguments (F10).
             BroadcastProbe::Arm();
             std::printf("Probe: getter capture requested (F10)\n");
+            return false;
+        }
+        // broadcast mod: the toggle key (F8 by default) shows and hides the overlay. Not consumed,
+        // the game maps no F8 — the same deal as F9 and F10 above.
+        if (Broadcast::HandleKey(event.key.key, down, event.key.repeat)) {
             return false;
         }
         if (down && !event.key.repeat && event.key.key == SDLK_F9 && BroadcastProbe::Enabled()) {
@@ -1118,7 +1125,9 @@ bool HandleEvent(const SDL_Event& event) {
 }
 
 bool Visible() {
-    return initialized && (menu_open || prompt_active || BbSettings::Get().show_fps || toast_waiting || toast_showing);
+    return initialized &&
+           (menu_open || prompt_active || BbSettings::Get().show_fps || toast_waiting ||
+            toast_showing || Broadcast::Visible()); // broadcast mod
 }
 
 bool MenuOpen() {
@@ -1161,6 +1170,9 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     NextToast(now);
     ImGui_ImplVulkan_NewFrame();
     ImGui::NewFrame();
+    if (!menu_open) {
+        Broadcast::Draw(float(extent.width), float(extent.height)); // broadcast mod
+    }
     if (menu_open) {
         Menu();
     }
