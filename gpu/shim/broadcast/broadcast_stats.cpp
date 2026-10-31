@@ -47,6 +47,7 @@ enum : int {
     IdTakedownsLanded = 5685,
     IdTakedownsAttempted = 9343,
     IdKnockedDown = 1683,
+    IdStunned = 8832,
     IdHeadHealth = 8851,
     IdOverallHealth = 8927,
     IdRoundNumber = 9910,
@@ -929,6 +930,8 @@ void Dump() {
     DumpArray("sig_landed", IdSigLanded, 2);
     DumpArray("sig_thrown", IdSigThrown, 2);
     DumpArray("knocked_down", IdKnockedDown, 2);
+    DumpArray("headshots_landed", IdHeadshotsLanded, 2);
+    DumpArray("stunned", IdStunned, 2);
     DumpHealth();
 }
 
@@ -1025,6 +1028,40 @@ Knockdown PollKnockdown() {
     // Consumed by the caller: the serial is what makes each knockdown a single event.
     result = lastKnockdown;
     return result;
+}
+
+bool ReadMomentum(int slot, MomentumCounters& out) {
+    if (!cache.valid) {
+        return false;
+    }
+    const std::uintptr_t store = cache.store;
+    MomentumCounters counters;
+    int value = 0;
+    bool answered = false;
+    if (ArrayValue(Lookup(store, IdSigLanded, 2), slot, 0, value)) {
+        counters.strikesLanded = std::max(value, 0);
+        answered = true;
+    }
+    if (ArrayValue(Lookup(store, IdHeadshotsLanded, 2), slot, 0, value)) {
+        counters.headStrikesLanded = std::max(value, 0);
+        answered = true;
+    }
+    if (ArraySub(Lookup(store, IdTakedownsLanded, 3), slot, 0, 0, value)) {
+        counters.takedownsLanded = std::max(value, 0);
+        answered = true;
+    }
+    // 1683 (dropped) and 8832 (stunned) count what happened *to* a fighter, so the fighter who caused
+    // the knockdown or the wobble reads the opponent's cell.
+    if (ArrayValue(Lookup(store, IdKnockedDown, 2), 1 - slot, 0, value)) {
+        counters.knockdowns = std::max(value, 0);
+        answered = true;
+    }
+    if (ArrayValue(Lookup(store, IdStunned, 2), 1 - slot, 0, value)) {
+        counters.stuns = std::max(value, 0);
+        answered = true;
+    }
+    out = counters;
+    return answered;
 }
 
 } // namespace Stats

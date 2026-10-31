@@ -111,6 +111,7 @@ void WriteDefaults(const std::string& path) {
                  "# popup_seconds / popup_delay / knockdown_seconds: the card's timing, in seconds.\n"
                  "# card_key: show the fight so far on demand. debug_card: the Phase 1 demo card.\n"
                  "# dump_stats: log the raw stat cells when the card key is pressed (a support aid).\n"
+                 "# momentum_*: the Phase 3 meter: points per event and how fast it drifts back to 0.\n"
                  "enabled = true\n"
                  "stat_popups = true\n"
                  "momentum_meter = true\n"
@@ -122,7 +123,13 @@ void WriteDefaults(const std::string& path) {
                  "knockdown_seconds = 3\n"
                  "card_key = F7\n"
                  "debug_card = false\n"
-                 "dump_stats = false\n");
+                 "dump_stats = false\n"
+                 "momentum_sig_strike = 3\n"
+                 "momentum_head_strike = 4\n"
+                 "momentum_takedown = 8\n"
+                 "momentum_knockdown = 25\n"
+                 "momentum_near_finish = 10\n"
+                 "momentum_decay = 2\n");
     std::fclose(file);
     std::printf("Broadcast: wrote the defaults to %s\n", path.c_str());
 }
@@ -195,6 +202,24 @@ void LoadConfig() {
             config.debug_card = ParseBool(value, config.debug_card, "debug_card");
         } else if (key == "dump_stats") {
             config.dump_stats = ParseBool(value, config.dump_stats, "dump_stats");
+        } else if (key == "momentum_sig_strike") {
+            config.momentum_sig_strike = ParseSeconds(value, config.momentum_sig_strike,
+                                                      "momentum_sig_strike", 0.0f, 100.0f);
+        } else if (key == "momentum_head_strike") {
+            config.momentum_head_strike = ParseSeconds(value, config.momentum_head_strike,
+                                                       "momentum_head_strike", 0.0f, 100.0f);
+        } else if (key == "momentum_takedown") {
+            config.momentum_takedown = ParseSeconds(value, config.momentum_takedown,
+                                                    "momentum_takedown", 0.0f, 100.0f);
+        } else if (key == "momentum_knockdown") {
+            config.momentum_knockdown = ParseSeconds(value, config.momentum_knockdown,
+                                                     "momentum_knockdown", 0.0f, 100.0f);
+        } else if (key == "momentum_near_finish") {
+            config.momentum_near_finish = ParseSeconds(value, config.momentum_near_finish,
+                                                       "momentum_near_finish", 0.0f, 100.0f);
+        } else if (key == "momentum_decay") {
+            config.momentum_decay = ParseSeconds(value, config.momentum_decay, "momentum_decay",
+                                                 0.0f, 50.0f);
         }
         // Unknown keys are ignored: later phases will add their own.
     }

@@ -20,6 +20,17 @@ struct Fighter {
     int overallHealth = 100;
 };
 
+/// The counters the momentum meter watches (Phase 3), for one fighter: the fight totals the game keeps
+/// at round 0. `knockdowns` and `stuns` are credited to the fighter who caused them, i.e. they are the
+/// opponent's own cells.
+struct MomentumCounters {
+    int strikesLanded = 0;
+    int headStrikesLanded = 0;
+    int takedownsLanded = 0;
+    int knockdowns = 0;
+    int stuns = 0;
+};
+
 /// Home is slot 1: the left column and red corner, like the game's own stats page. Away is slot 0,
 /// the right column and blue corner.
 struct Snapshot {
@@ -63,6 +74,10 @@ bool FightSoFar(Snapshot& out);
 
 /// The most recent knockdown, consumed once: serial changes only when a counter really rose.
 Knockdown PollKnockdown();
+
+/// The momentum meter's counters for one fighter (slot 0 away, 1 home), read from the fight total.
+/// False when the cache is empty or the store does not answer.
+bool ReadMomentum(int slot, MomentumCounters& out);
 
 /// True once the cells for this fight are cached. The card draws only when it is.
 bool Ready();

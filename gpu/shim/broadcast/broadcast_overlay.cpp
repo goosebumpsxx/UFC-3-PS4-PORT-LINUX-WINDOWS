@@ -10,6 +10,7 @@
 #include <SDL3/SDL_keycode.h>
 #include "broadcast_card.h"
 #include "broadcast_config.h"
+#include "broadcast_momentum.h"
 #include "broadcast_stats.h"
 #include "imgui.h"
 
@@ -118,6 +119,7 @@ void Init() {
     }
     Stats::Init();
     Card::Init();
+    Momentum::Init();
 }
 
 bool Visible() {
@@ -138,6 +140,10 @@ void Draw(float width, float height) {
     // `stat_popups = false` keeps the traps and the reads away entirely: the card module never runs.
     if (config.stat_popups) {
         Card::Tick(canvas);
+    }
+    // `momentum_meter = false` is the same deal: no polling, no reads, no bar.
+    if (config.momentum_meter) {
+        Momentum::Tick(canvas);
     }
     if (config.debug_card) {
         DrawDemoCard(canvas);
