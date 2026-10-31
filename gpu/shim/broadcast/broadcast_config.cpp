@@ -111,7 +111,8 @@ void WriteDefaults(const std::string& path) {
                  "# popup_seconds / popup_delay / knockdown_seconds: the card's timing, in seconds.\n"
                  "# card_key: show the fight so far on demand. debug_card: the Phase 1 demo card.\n"
                  "# dump_stats: log the raw stat cells when the card key is pressed (a support aid).\n"
-                 "# momentum_*: the Phase 3 meter: points per event and how fast it drifts back to 0.\n"
+                 "# momentum_*: the Phase 3 meter: points per event, how fast it drifts back to 0, the\n"
+                 "#   margin a round has to be won by, and the two names the meter prints.\n"
                  "enabled = true\n"
                  "stat_popups = true\n"
                  "momentum_meter = true\n"
@@ -124,12 +125,15 @@ void WriteDefaults(const std::string& path) {
                  "card_key = F7\n"
                  "debug_card = false\n"
                  "dump_stats = false\n"
-                 "momentum_sig_strike = 3\n"
-                 "momentum_head_strike = 4\n"
-                 "momentum_takedown = 8\n"
-                 "momentum_knockdown = 25\n"
-                 "momentum_near_finish = 10\n"
-                 "momentum_decay = 2\n");
+                 "momentum_sig_strike = 8\n"
+                 "momentum_head_strike = 10\n"
+                 "momentum_takedown = 18\n"
+                 "momentum_knockdown = 40\n"
+                 "momentum_near_finish = 16\n"
+                 "momentum_decay = 1\n"
+                 "momentum_even_margin = 3\n"
+                 "momentum_home_name =\n"
+                 "momentum_away_name =\n");
     std::fclose(file);
     std::printf("Broadcast: wrote the defaults to %s\n", path.c_str());
 }
@@ -220,6 +224,13 @@ void LoadConfig() {
         } else if (key == "momentum_decay") {
             config.momentum_decay = ParseSeconds(value, config.momentum_decay, "momentum_decay",
                                                  0.0f, 50.0f);
+        } else if (key == "momentum_even_margin") {
+            config.momentum_even_margin = ParseSeconds(value, config.momentum_even_margin,
+                                                       "momentum_even_margin", 0.0f, 100.0f);
+        } else if (key == "momentum_home_name") {
+            config.momentum_home_name = value;
+        } else if (key == "momentum_away_name") {
+            config.momentum_away_name = value;
         }
         // Unknown keys are ignored: later phases will add their own.
     }

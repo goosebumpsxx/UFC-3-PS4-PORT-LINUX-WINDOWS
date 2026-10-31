@@ -37,6 +37,11 @@ ImVec2 Measure(const Canvas& canvas, const char* text) {
     return ImGui::GetFont()->CalcTextSizeA(TextPixels * canvas.scale, FLT_MAX, 0.0f, text);
 }
 
+ImVec2 MeasureAt(const Canvas& canvas, const char* text, float pixels) {
+    return ImGui::GetFont()->CalcTextSizeA(std::max(pixels, 1.0f) * canvas.scale, FLT_MAX, 0.0f,
+                                           text);
+}
+
 /// Phase 1's demo card: one line and a half-filled bar, bottom-centre, above the game's clock strip
 /// (health and stamina sit top-left and top-right, the round timer at the very bottom). Phase 2 keeps
 /// it behind `debug_card` now that a real card exists.
@@ -78,6 +83,27 @@ float TextWidth(const Canvas& canvas, const char* text) {
 
 float TextLineHeight(const Canvas& canvas) {
     return Measure(canvas, "0").y;
+}
+
+float TextWidthAt(const Canvas& canvas, const char* text, float pixels) {
+    return MeasureAt(canvas, text, pixels).x;
+}
+
+float TextLineHeightAt(const Canvas& canvas, float pixels) {
+    return MeasureAt(canvas, "0", pixels).y;
+}
+
+void DrawTextAt(const Canvas& canvas, float x, float y, const char* text, std::uint32_t colour,
+                TextAlign align, float pixels) {
+    const ImVec2 measured = MeasureAt(canvas, text, pixels);
+    float left = x * canvas.width;
+    if (align == TextAlign::Centre) {
+        left -= measured.x * 0.5f;
+    } else if (align == TextAlign::Right) {
+        left -= measured.x;
+    }
+    ImGui::GetForegroundDrawList()->AddText(ImGui::GetFont(), std::max(pixels, 1.0f) * canvas.scale,
+                                            ImVec2(left, y * canvas.height), colour, text);
 }
 
 void DrawText(const Canvas& canvas, float x, float y, const char* text, std::uint32_t colour,

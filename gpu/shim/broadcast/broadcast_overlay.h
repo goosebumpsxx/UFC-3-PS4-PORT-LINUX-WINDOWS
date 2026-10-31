@@ -34,6 +34,15 @@ constexpr std::uint32_t Rgba(int r, int g, int b, int a) {
 float TextWidth(const Canvas& canvas, const char* text);
 float TextLineHeight(const Canvas& canvas);
 
+/// The same, at an explicit size in pixels (times the canvas scale): the momentum meter's tags and
+/// slates are smaller than the cards' rows.
+float TextWidthAt(const Canvas& canvas, const char* text, float pixels);
+float TextLineHeightAt(const Canvas& canvas, float pixels);
+
+/// Text at (x, y) in fractions and at `pixels`; y is the top of the line.
+void DrawTextAt(const Canvas& canvas, float x, float y, const char* text, std::uint32_t colour,
+                TextAlign align, float pixels);
+
 /// Text at (x, y) in fractions; y is the top of the line.
 void DrawText(const Canvas& canvas, float x, float y, const char* text, std::uint32_t colour,
               TextAlign align = TextAlign::Left);

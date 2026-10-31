@@ -22,13 +22,20 @@ struct Config {
     std::string card_key = "F7";   // on demand: the fight so far
     bool debug_card = false;        // the Phase 1 "Broadcast mod loaded" demo card
     bool dump_stats = false;        // log this fight's raw store cells on the card key
-    // Phase 3: the momentum meter. Points per event and how fast it drifts back to the centre.
-    float momentum_sig_strike = 3.0f;   // significant strike landed
-    float momentum_head_strike = 4.0f;  // significant head strike landed (instead of the above)
-    float momentum_takedown = 8.0f;     // takedown landed
-    float momentum_knockdown = 25.0f;   // knockdown scored
-    float momentum_near_finish = 10.0f; // stun/wobble forced (the game's own Stuns/Wobbles row)
-    float momentum_decay = 2.0f;        // points per second back towards 0
+    // Phase 3: the momentum meter. Points per event and how fast it drifts back to the centre. The
+    // values are tuned so that a three or four strike flurry visibly moves our bar, which the game's
+    // own ticked bar does not show.
+    float momentum_sig_strike = 8.0f;   // significant strike landed
+    float momentum_head_strike = 10.0f;  // significant head strike landed (instead of the above)
+    float momentum_takedown = 18.0f;    // takedown landed
+    float momentum_knockdown = 40.0f;   // knockdown scored
+    float momentum_near_finish = 16.0f; // stun/wobble forced (the game's own Stuns/Wobbles row)
+    float momentum_decay = 1.0f;        // points per second back towards 0
+    float momentum_even_margin = 3.0f;  // a round within this many points is EVEN
+    // Fighter names for the meter's labels. Empty means the corner: "RED" (home) or "BLUE" (away),
+    // which is all the Phase 2 card shows — the store carries no names.
+    std::string momentum_home_name;
+    std::string momentum_away_name;
 };
 
 /// Reads broadcast_mod.ini from the folder of bbport.ini (BB_CONFIG), writing the defaults when the
