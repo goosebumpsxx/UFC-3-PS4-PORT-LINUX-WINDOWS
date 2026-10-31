@@ -137,6 +137,11 @@ reinterpreted as a float is a denormal and lands nowhere near that window — ot
 as an integer in `[0, 200]`. Clamp to 100. An unwritten cell reads -1 and is ignored.
 If health is still unknown, the bars draw full and the card keeps working.
 
+Each of the two cells is hunted on its own and health that a capture of *this* fight already
+found is carried across later captures (a bell or a probe re-capture must not throw away a
+number that is still valid), so the probes stop as soon as both cells are known instead of
+running for the whole fight.
+
 ## 4. `broadcast_mod.ini`
 
 Everything is behind a switch; the file is written with these defaults on first start and
@@ -190,9 +195,25 @@ Round 1, second pair, 35 s later:
 | away takedowns | 2 / 3 | 2 / 3 | ok |
 | away knockdowns | 0 | 0 | ok |
 
-Health at that instant: store floats `head [1]=100.00 [2]=84.79`, `overall [1]=100 [2]=94`
-for away/home, and the card printed `head=85 overall=94` for the home fighter and
-`head=100 overall=100` for the away fighter — the same cells, decoded.
+Round 1, third pair (`20261031_184505.log`), a round fought entirely at range:
+
+| Row | game page | card | |
+| --- | --- | --- | --- |
+| home significant / total / TD / KD | 0/0, 1, 0/0, 0 | 0/0, 1, 0/0, 0 | ok |
+| away significant | 3 / 8 | 3 / 8 | ok |
+| away total landed | 9 | 9 | ok |
+| away takedowns / knockdowns | 0/0, 0 | 0/0, 0 | ok |
+
+Fourth pair (`20261031_190206.log`), after a fighter had been knocked down in an earlier
+fight of the same session: home `0/0, 1, 0/0, 0` and away `4/6, 7, 0/0, 0` on the page, the
+same numbers on the card — every row, including significant strikes thrown, matched.
+
+Health in that pair: store floats `head [1]=100.00 [2]=93.94`, `overall [1]=98 [2]=97`, card
+`head=94 overall=97` for home and `head=100 overall=98` for away.
+
+Health at the second pair's instant: store floats `head [1]=100.00 [2]=84.79`,
+`overall [1]=100 [2]=94` for away/home, and the card printed `head=85 overall=94` for the
+home fighter and `head=100 overall=100` for the away fighter — the same cells, decoded.
 
 Earlier same-instant pairs agreed the same way, including a fight where **every** row matched
 exactly (`cmp7-menu.png` with `20261031_173213.log`: total landed 30/27, thrown 53/34,
@@ -220,16 +241,18 @@ or the health bars.
 ## 7. Known issues
 
 1. **Significant strikes thrown can read 2 high** (and total strikes thrown 3–4 high) after a
-   grappling exchange. In the two pairs above the store said 15 and 18 where the page said 13
-   and 16; landed, takedowns, knockdowns, health and the total-strikes *landed* row were exact.
-   The offset appeared in a ground-and-pound round and stayed constant while the fight went on,
-   which points at the store counting strike *initiations* that the page drops when the strike
-   is interrupted (stuffed by a takedown, cancelled by a grapple). In fights with no ground
-   work every row matched exactly, so this is a small, situational skew rather than a mapping
-   error. It affects the percentage in the significant-strikes row by a point or two.
-2. **The knockdown card's own numbers are only tested against a count of 0 in this phase** —
-   the pop-up path fired in Phase 1's test fight, but a fresh knockdown was not re-run after
-   the rework (`kd` was 0 in every same-instant pair).
+   grappling exchange. In the first two pairs the store said 15 and 18 where the page said 13
+   and 16, and 45 where the page said 41; landed, takedowns, knockdowns, health and the
+   total-strikes *landed* row were exact. The offset appeared in a ground-and-pound round and
+   stayed constant while the fight went on, which points at the store counting strike
+   *initiations* that the page drops when the strike is interrupted (stuffed by a takedown,
+   cancelled by a grapple). The two rounds fought at range (third and fourth pairs) matched
+   thrown exactly, so this is a small, situational skew rather than a mapping error. It moves
+   the percentage in the significant-strikes row by a point or two.
+2. **A knockdown card was seen firing once** (`Broadcast: knockdown, home fighter down (1)`)
+   but not photographed with the new layout, and the KNOCKDOWNS row has only been compared
+   with the page while it was 0/0. The credit direction it uses (a fighter's column reads the
+   opponent's 1683) is the one measured in Phase 2 stage B against the page.
 3. **Health can take up to ~8 s of fighting to appear.** Until the first capture catches the
    HUD reading 8851/8927 the bars draw full. The card never blocks or crashes; the log line
    `with health` / `without health` says which state it is in.
@@ -239,6 +262,9 @@ or the health bars.
    not updated that cell yet (it lags a frame or two behind the live HUD), the card shows the
    same slightly-old number the pause page shows — by design, since matching that page is the
    acceptance test.
+6. **A capture that lands outside a fight is retried every 8 s** and logs
+   `the captured clock cells do not look like a round (round 0, remaining 0)`. That is the
+   walk-in and the menus; nothing is latched and the first capture inside the fight takes over.
 
 ## 8. Running it
 

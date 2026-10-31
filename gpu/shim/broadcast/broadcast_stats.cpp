@@ -521,19 +521,28 @@ bool Rebuild() {
 
     std::uintptr_t head = 0;
     std::uintptr_t overall = 0;
-    const bool trappedHealth =
-        LearnedBase(IdHeadHealth, head) && LearnedBase(IdOverallHealth, overall);
-    // The pause-menu stats page is the only screen that reads the health ids, so a capture taken in
-    // ordinary play usually misses them. The store knows them anyway: same hash, same value arrays.
-    if (!trappedHealth) {
+    // The health cells are only read when the game draws a fighter's damage, so a capture taken in
+    // ordinary play often misses them. The store knows them anyway: same hash, same value arrays.
+    // Each one is looked for on its own: a capture that caught the overall cell is still useful.
+    if (!LearnedBase(IdHeadHealth, head)) {
         const Array headArray = Lookup(store, IdHeadHealth, 1);
+        head = headArray.ok ? headArray.values : 0;
+    }
+    if (!LearnedBase(IdOverallHealth, overall)) {
         const Array overallArray = Lookup(store, IdOverallHealth, 1);
-        if (headArray.ok && overallArray.ok) {
-            head = headArray.values;
-            overall = overallArray.values;
+        overall = overallArray.ok ? overallArray.values : 0;
+    }
+    // A re-capture inside the same fight must not throw away health an earlier capture learned: the
+    // cells are valid for as long as this fight's cache is.
+    if (cache.valid && cache.healthKnown) {
+        if (head == 0) {
+            head = cache.headHealthBlock;
+        }
+        if (overall == 0) {
+            overall = cache.overallHealthBlock;
         }
     }
-    fresh.healthKnown = head != 0 && overall != 0;
+    fresh.healthKnown = head != 0 || overall != 0;
     fresh.headHealthBlock = head;
     fresh.overallHealthBlock = overall;
 
@@ -549,13 +558,22 @@ bool Rebuild() {
         return false;
     }
     if (round < 1 || round > 5 || remaining < 0 || remaining > 900) {
-        // The title screen and the menus answer with round 0: that is not a fight, keep looking.
-        SetStatus("the captured clock cells do not look like a round");
+        // The title screen and the menus answer with round 0: that is not a fight, keep looking. The
+        // values go in the log: a capture that lands on a fight should never be rejected here.
+        static char reason[160];
+        std::snprintf(reason, sizeof(reason),
+                      "the captured clock cells do not look like a round (round %d, remaining %d)",
+                      int(round), int(remaining));
+        std::printf("Broadcast: stats: %s\n", reason);
+        SetStatus(reason);
         return false;
     }
     cache = fresh;
     cache.valid = true;
-    healthProbes = 0;
+    if (fresh.healthKnown) {
+        // Known health stops the probe loop; unknown health keeps it counting towards its limit.
+        healthProbes = 0;
+    }
     status = nullptr;
     statusLogged = false;
     lastClockValue = -1;
@@ -649,7 +667,9 @@ void ReadFighter(int slot, int round, bool home, Fighter& out) {
     if (ArrayValue(Lookup(store, IdTakedownsAttempted, 2), slot, round, value)) {
         out.takedownsAttempted = std::max(value, 0);
     }
-    if (ArrayValue(Lookup(store, IdKnockedDown, 2), slot, round, value)) {
+    // 1683 is "times this fighter was knocked down", and the game's KNOCKDOWNS row credits the other
+    // fighter with the knockdown, so a fighter's column reads the opponent's cell.
+    if (ArrayValue(Lookup(store, IdKnockedDown, 2), 1 - slot, round, value)) {
         out.knockedDown = std::max(value, 0);
     }
     if (!Health(cache.headHealthBlock, home, value)) {
@@ -758,10 +778,12 @@ void Tick() {
     } else if (bellSeen) {
         // The bell rang: the next fight has its own arena, so re-learn before it starts.
         wantCapture = true;
-    } else if (!cache.healthKnown && healthProbes < 12 && cache.roundValue >= 1 &&
-               cache.roundValue <= 5) {
+    } else if ((cache.headHealthBlock == 0 || cache.overallHealthBlock == 0) && healthProbes < 12 &&
+               cache.roundValue >= 1 && cache.roundValue <= 5) {
         // Health cells are read only when the game draws a fighter's damage, and the pause menu draws
         // no damage: take a few short, rate-limited captures during the fight until one catches it.
+        // Each cell is hunted on its own, so catching only one of the two still counts (the other bar
+        // stays full until a later capture finds it).
         wantCapture = true;
         healthProbe = true;
     }
