@@ -765,6 +765,10 @@ constexpr uintptr_t GetterEntry = ImageBase + 0x1ac930;
 constexpr uintptr_t IntSite = ImageBase + 0x1acb77;
 /// The float stat read inside the getter: `vcvttss2si ecx,[rax+rcx]`.
 constexpr uintptr_t FloatSite = ImageBase + 0x1acbd7;
+/// Fast scalar read (per-fighter int values): the strike/takedown/knockdown counters go
+/// through this path, whose value load is `mov eax,[rcx+rax*4]`, not the loads above.
+constexpr uintptr_t FastReadEntry = ImageBase + 0xb92c80;
+constexpr uintptr_t FastReadSite = ImageBase + 0xb92dff;
 
 struct CaptureEvent {
     std::uint32_t id;
@@ -776,6 +780,7 @@ struct CaptureEvent {
     std::int32_t start;
     std::int32_t stride;
     std::uint64_t slot;
+    bool is_fast;
 };
 
 constexpr unsigned EntryMax = 128;
@@ -790,8 +795,16 @@ PVOID capture_handler = nullptr;
 unsigned char* capture_code = nullptr;
 unsigned char* capture_int_site = nullptr;
 unsigned char* capture_float_site = nullptr;
+unsigned char* capture_fast_entry = nullptr;
+unsigned char* capture_fast_site = nullptr;
 std::atomic<bool> capture_armed{false};
 Log* capture_log = nullptr;
+// The fast-read entry trap stashes (id, side, object): its value load only sees the index,
+// so the load trap pairs the read back to the id through these.
+std::atomic<std::uint32_t> fast_id{0};
+std::atomic<std::uint32_t> fast_side{0};
+std::atomic<std::uint64_t> fast_object{0};
+std::atomic<bool> fast_pending{false};
 
 /// Puts the patched bytes back and unhooks. Safe from the trap handler: it never runs them.
 void DisarmCapture() {
@@ -812,6 +825,8 @@ void DisarmCapture() {
     restore(capture_code, 0x55);
     restore(capture_int_site, 0x8b);
     restore(capture_float_site, 0xc5);
+    restore(capture_fast_entry, 0x53);
+    restore(capture_fast_site, 0x8b);
     if (capture_handler) {
         RemoveVectoredExceptionHandler(capture_handler);
         capture_handler = nullptr;
@@ -820,6 +835,8 @@ void DisarmCapture() {
         (*capture_log)("Probe: getter capture disarmed\n");
     }
 }
+
+void CommitRead(const CaptureEvent& event);
 
 /// Records one stat read: `base + offset` is where the game just loaded the value from.
 /// One row per stat cell: a cell read again on a later frame only refreshes its value.
@@ -848,6 +865,11 @@ void RecordRead(const CONTEXT* context, bool is_float) {
             event.value = raw;
         }
     }
+    CommitRead(event);
+}
+
+/// Appends or refreshes one value record (deduplicated by id + side + cell).
+void CommitRead(const CaptureEvent& event) {
     const unsigned total = std::min(value_count.load(), ValueMax);
     for (unsigned i = 0; i < total; ++i) {
         CaptureEvent& known = values[i];
@@ -860,6 +882,29 @@ void RecordRead(const CONTEXT* context, bool is_float) {
     if (index < ValueMax) {
         values[index] = event;
     }
+}
+
+/// Records a fast-path scalar read: the value is at `data + index*4`; the id and side were
+/// stashed by the fast-read entry trap right before (the load itself only sees the index).
+void RecordFastRead(const CONTEXT* context) {
+    if (!fast_pending.load(std::memory_order_relaxed)) {
+        return;
+    }
+    CaptureEvent event{};
+    event.is_fast = true;
+    event.id = fast_id.load(std::memory_order_relaxed);
+    event.side = fast_side.load(std::memory_order_relaxed);
+    event.context = fast_object.load(std::memory_order_relaxed);
+    event.base = context->Rcx;
+    event.offset = static_cast<std::int64_t>(context->Rax) * 4;
+    event.slot = context->Rcx + context->Rax * 4;
+    event.start = 0;
+    event.stride = 4;
+    std::int32_t raw = 0;
+    if (SafeCopy(&raw, event.slot, sizeof(raw))) {
+        event.value = raw;
+    }
+    CommitRead(event);
 }
 
 LONG CALLBACK OnCaptureTrap(EXCEPTION_POINTERS* info) {
@@ -907,6 +952,28 @@ LONG CALLBACK OnCaptureTrap(EXCEPTION_POINTERS* info) {
         }
         return EXCEPTION_CONTINUE_EXECUTION;
     }
+    if (address == FastReadEntry) {
+        fast_id.store(static_cast<std::uint32_t>(context->Rsi), std::memory_order_relaxed);
+        fast_side.store(static_cast<std::uint32_t>(context->Rcx), std::memory_order_relaxed);
+        fast_object.store(context->Rdi, std::memory_order_relaxed);
+        fast_pending.store(true, std::memory_order_relaxed);
+        // The breakpoint replaced `push rbx`: do it by hand and resume after it.
+        context->Rsp -= 8;
+        *reinterpret_cast<std::uint64_t*>(context->Rsp) = context->Rbx;
+        context->Rip = FastReadEntry + 1;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (address == FastReadSite) {
+        std::int32_t raw = 0;
+        SafeCopy(&raw, context->Rcx + context->Rax * 4, sizeof(raw));
+        RecordFastRead(context);
+        context->Rax = static_cast<std::uint32_t>(raw); // `mov eax,[rcx+rax*4]` zero-extends
+        context->Rip = FastReadSite + 3;
+        if (value_count.load() >= capture_limit.load()) {
+            DisarmCapture();
+        }
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
@@ -929,9 +996,10 @@ void FlushCaptures(Log& log) {
     log("Probe: value read: %u call(s)\n", value_total);
     for (unsigned i = 0; i < value_total; ++i) {
         const CaptureEvent& event = values[i];
-        log("Probe:   read id %u side %u  base 0x%llx off %lld -> 0x%llx = %lld  start %d stride %d\n",
+        log("Probe:   read id %u side %u  base 0x%llx off %lld -> 0x%llx = %lld  start %d stride %d%s\n",
             event.id, event.side, (unsigned long long)event.base, (long long)event.offset,
-            (unsigned long long)event.slot, (long long)event.value, event.start, event.stride);
+            (unsigned long long)event.slot, (long long)event.value, event.start, event.stride,
+            event.is_fast ? "  [fast]" : "");
     }
     for (int index = 0; index < context_count; ++index) {
         const std::uint64_t context = contexts[index];
@@ -961,16 +1029,20 @@ void ArmCapture() {
     capture_code = reinterpret_cast<unsigned char*>(GetterEntry);
     capture_int_site = reinterpret_cast<unsigned char*>(IntSite);
     capture_float_site = reinterpret_cast<unsigned char*>(FloatSite);
+    capture_fast_entry = reinterpret_cast<unsigned char*>(FastReadEntry);
+    capture_fast_site = reinterpret_cast<unsigned char*>(FastReadSite);
     DWORD old = 0;
     struct Site {
         unsigned char* address;
         unsigned char expected;
         unsigned char patch;
         const char* name;
-    } sites[3] = {
+    } sites[5] = {
         {capture_code, 0x55, 0xCC, "getter"},
         {capture_int_site, 0x8b, 0xCC, "int read"},
         {capture_float_site, 0xc5, 0xCC, "float read"},
+        {capture_fast_entry, 0x53, 0xCC, "fast read entry"},
+        {capture_fast_site, 0x8b, 0xCC, "fast read load"},
     };
     for (Site& site : sites) {
         if (!VirtualProtect(site.address, 16, PAGE_EXECUTE_READWRITE, &old)) {
@@ -1000,7 +1072,8 @@ void ArmCapture() {
         *site.address = site.patch;
         FlushInstructionCache(GetCurrentProcess(), site.address, 1);
     }
-    log("Probe: getter capture armed at 0x%llx, %u reads\n", (unsigned long long)GetterEntry, ValueMax);
+    log("Probe: getter capture armed at 0x%llx + fast read 0x%llx, %u reads\n",
+        (unsigned long long)GetterEntry, (unsigned long long)FastReadEntry, ValueMax);
     std::thread([] {
         std::this_thread::sleep_for(std::chrono::seconds(8));
         DisarmCapture();
