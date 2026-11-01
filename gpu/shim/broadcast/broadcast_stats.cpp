@@ -22,6 +22,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <thread>
 
@@ -54,6 +55,14 @@ enum : int {
     IdRoundRemaining = 4454,
     IdMatchState = 6716,
     IdBetweenRounds = 6714,
+    // Phase 4: the game's own judges' cards, from the same eboot dictionary.
+    IdJudge1Total = 4145,
+    IdJudge2Total = 4022,
+    IdJudge3Total = 2965,
+    IdJudge1Pick = 7422,
+    IdJudge2Pick = 7431,
+    IdJudge3Pick = 8216,
+    IdFighterScoreCard = 7573,
 };
 
 /// A read a fault cannot kill: the runtime's guest-read recovery resumes it here. The same helper
@@ -1062,6 +1071,125 @@ bool ReadMomentum(int slot, MomentumCounters& out) {
     }
     out = counters;
     return answered;
+}
+
+namespace {
+
+constexpr int kScorecardIds[] = {IdJudge1Total, IdJudge2Total, IdJudge3Total,
+                                 IdJudge1Pick, IdJudge2Pick, IdJudge3Pick,
+                                 IdFighterScoreCard,};
+
+const char* ScorecardName(int id) {
+    switch (id) {
+    case IdJudge1Total: return "JUDGE1_SCORE_TOTAL";
+    case IdJudge2Total: return "JUDGE2_SCORE_TOTAL";
+    case IdJudge3Total: return "JUDGE3_SCORE_TOTAL";
+    case IdJudge1Pick: return "JUDGE1_PICK";
+    case IdJudge2Pick: return "JUDGE2_PICK";
+    case IdJudge3Pick: return "JUDGE3_PICK";
+    case IdFighterScoreCard: return "FIGHTER_SCORE_CARD";
+    default: return "?";
+    }
+}
+
+/// Appends, so several F11 presses in one run accumulate. Lands next to BB_CONFIG like the probe log.
+FILE* OpenScorecardLog() {
+    char path[1024] = "broadcast_scorecard.log";
+    if (const char* config = std::getenv("BB_CONFIG"); config && *config) {
+        std::snprintf(path, sizeof(path), "%s", config);
+        char* cut = std::strrchr(path, '/');
+        if (char* back = std::strrchr(path, '\\'); back != nullptr && (cut == nullptr || back > cut)) {
+            cut = back;
+        }
+        if (cut != nullptr) {
+            cut[1] = '\0';
+        } else {
+            path[0] = '\0';
+        }
+        std::snprintf(path + std::strlen(path), sizeof(path) - std::strlen(path),
+                      "broadcast_scorecard.log");
+    }
+    return std::fopen(path, "a");
+}
+
+} // namespace
+
+bool ReadScorecard(Scorecard& out) {
+    if (!cache.valid) {
+        return false;
+    }
+    const Array array = Lookup(cache.store, IdFighterScoreCard, 2);
+    if (!array.ok) {
+        return false;
+    }
+    Scorecard card;
+    for (int slot = 0; slot < 2; ++slot) {
+        int value = 0;
+        if (!ArrayValue(array, slot, 0, value)) {
+            return false;
+        }
+        card.total[slot] = value;
+        for (int round = 1; round <= 5; ++round) {
+            int roundValue = 0;
+            if (!ArrayValue(array, slot, round, roundValue)) {
+                break;
+            }
+            card.score[slot][round - 1] = roundValue;
+            // A round only counts once the game has put a score on it: 0 means not scored yet.
+            if (roundValue > 0 && round > card.rounds) {
+                card.rounds = round;
+            }
+        }
+    }
+    card.valid = true;
+    out = card;
+    return true;
+}
+
+void DumpScorecard() {
+    FILE* file = OpenScorecardLog();
+    if (file == nullptr) {
+        std::printf("Broadcast: scorecard dump: no log file\n");
+        return;
+    }
+    const std::uintptr_t store = cache.valid ? cache.store : 0;
+    std::fprintf(file, "\n=== scorecard dump t=%.2fs store=%s ===\n", Now(),
+                 store != 0 ? "learned" : "none");
+    for (const int id : kScorecardIds) {
+        bool found = false;
+        // The descriptor states the element count and strides, but not the dimension count, so try
+        // each: the right one shows the per-fighter / per-round layout.
+        for (int dims = 1; dims <= 3; ++dims) {
+            const Array array = Lookup(store, id, dims);
+            if (!array.ok) {
+                continue;
+            }
+            found = true;
+            std::fprintf(file, "%-22s id=%-5d dims=%d count=%d strides=", ScorecardName(id), id, dims,
+                         array.count);
+            for (int d = 0; d < dims; ++d) {
+                std::int32_t stride = 0;
+                if (Read(array.strides + std::uintptr_t(d) * 4, stride)) {
+                    std::fprintf(file, "%d ", int(stride));
+                }
+            }
+            std::fprintf(file, "values=");
+            const int limit = std::min(array.count, 12);
+            for (int i = 0; i < limit; ++i) {
+                std::int32_t word = 0;
+                if (Read(array.values + std::uintptr_t(i) * 4, word)) {
+                    std::fprintf(file, "%d ", int(word));
+                }
+            }
+            std::fprintf(file, "\n");
+        }
+        if (!found) {
+            std::fprintf(file, "%-22s id=%-5d not in store\n", ScorecardName(id), id);
+        }
+    }
+    std::fflush(file);
+    std::fclose(file);
+    std::printf("Broadcast: scorecard dumped\n");
 }
 
 } // namespace Stats

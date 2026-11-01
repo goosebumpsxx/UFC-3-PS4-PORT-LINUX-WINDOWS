@@ -57,6 +57,24 @@ void Init();
 /// knockdown counter. Cheap enough to call every frame.
 void Tick();
 
+/// Phase 4 discovery (F11): dump every array the stat store holds for the judge scorecard ids, so
+/// the layout is read off the game rather than guessed. Appends to broadcast_scorecard.log.
+void DumpScorecard();
+
+/// The game's own running cards, read from FIGHTER_SCORE_CARD (id 7573).
+/// `score[slot][round-1]` is the sum of all three judges for that round: 30 when they all gave it,
+/// 27 when they all gave it away, 29/28 when they split. Slot 1 is home (red), slot 0 away (blue).
+struct Scorecard {
+    bool valid = false;
+    int rounds = 0;         ///< how many rounds already have a card
+    int total[2] = {0, 0};  ///< running total, indexed by slot
+    int score[2][5] = {};   ///< per round, indexed by slot then round-1
+};
+
+/// Reads the cards out of the stat store. False when the cache is cold or the id is absent, which
+/// is what happens outside a fight and before the first bell.
+bool ReadScorecard(Scorecard& out);
+
 /// True in a live fight: the round is 1..5 and the clock is a plausible round clock.
 bool InFight();
 

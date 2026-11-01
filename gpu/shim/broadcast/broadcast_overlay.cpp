@@ -11,6 +11,7 @@
 #include "broadcast_card.h"
 #include "broadcast_config.h"
 #include "broadcast_momentum.h"
+#include "broadcast_scorecard.h"
 #include "broadcast_stats.h"
 #include "imgui.h"
 
@@ -146,6 +147,7 @@ void Init() {
     Stats::Init();
     Card::Init();
     Momentum::Init();
+    Scorecard::Init();
 }
 
 bool Visible() {
@@ -171,6 +173,9 @@ void Draw(float width, float height) {
     if (config.momentum_meter) {
         Momentum::Tick(canvas);
     }
+    if (config.scorecard_reveal) {
+        Scorecard::Tick(canvas);
+    }
     if (config.debug_card) {
         DrawDemoCard(canvas);
     }
@@ -184,6 +189,10 @@ bool HandleKey(std::uint32_t key, bool down, bool repeat) {
         return false;
     }
     if (!repeat && Card::HandleKey(key)) {
+        return true;
+    }
+    if (key == SDLK_F11) {
+        Stats::DumpScorecard();
         return true;
     }
     if (repeat || key != ToggleKeyCode()) {

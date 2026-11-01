@@ -120,6 +120,7 @@ void WriteDefaults(const std::string& path) {
                  "ui_scale = 1.0\n"
                  "toggle_key = F8\n"
                  "popup_seconds = 5\n"
+                 "scorecard_seconds = 6\n"
                  "popup_delay = 15\n"
                  "knockdown_seconds = 3\n"
                  "card_key = F7\n"
@@ -190,6 +191,9 @@ void LoadConfig() {
             }
         } else if (key == "popup_seconds") {
             config.popup_seconds = ParseSeconds(value, config.popup_seconds, "popup_seconds", 1.0f, 30.0f);
+        } else if (key == "scorecard_seconds") {
+            config.scorecard_seconds = ParseSeconds(value, config.scorecard_seconds, "scorecard_seconds",
+                                                    2.0f, 20.0f);
         } else if (key == "popup_delay") {
             config.popup_delay = ParseSeconds(value, config.popup_delay, "popup_delay", 0.0f, 300.0f);
         } else if (key == "knockdown_seconds") {

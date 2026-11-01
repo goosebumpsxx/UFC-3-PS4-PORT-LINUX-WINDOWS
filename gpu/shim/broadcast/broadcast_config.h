@@ -13,6 +13,7 @@ struct Config {
     bool stat_popups = true;
     bool momentum_meter = true;
     bool scorecard_reveal = true;
+    float scorecard_seconds = 6.0f; // how long the Phase 4 card reveal stays up
     float ui_scale = 1.0f;
     std::string toggle_key = "F8";
     // Phase 2: the stat card.
